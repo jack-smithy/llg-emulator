@@ -5,12 +5,33 @@ from pathlib import Path
 from test import load_trajectory
 from einops import repeat
 
-path = Path("../micromagnetic-data/data/v2/low_res/train/sample_1")
+save_path = Path("results")
+path = Path("../micromagnetic-data/data/v2/small/train/sample_1")
 m, _ = load_trajectory(path=path)
 ref = np.mean(m, axis=(-2, -1))
 print(ref.shape)  # (100, 3)
 
-data = np.load("training_evolution.npy")
+key = jr.PRNGKey(0)
+path = Path("../micromagnetic-data/data/v2/small/train/sample_1")
+m, H_ext = load_trajectory(path=path)
+
+save_path = Path("results")
+
+weights_paths = list((save_path / "checkpoints").iterdir())
+weights_paths.sort(key=lambda p: int(p.stem.split("_")[-1]))
+
+m_means = []
+for weights_path in weights_paths:
+    model = load_model(key, weights_path)
+
+    m_pred = rollout(
+        lambda x: stepper_fn(x, model, H_ext),
+        n=99,
+        include_init=True,
+    )(m[0])
+    m_means.append(jnp.mean(m_pred, axis=(-2, -1)))
+
+m_means = jnp.stack(m_means, axis=0)
 print(data.shape)  # (64, 100, 3)
 
 
@@ -68,5 +89,4 @@ anim = ani.FuncAnimation(
     interval=75,  # ms between frames
     blit=True,
 )
-
-anim.save("trainig.gif", writer="pillow")
+anim.save(save_path / "trainig.gif", writer="pillow")

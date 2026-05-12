@@ -1,14 +1,22 @@
+import os
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+
+
+from pathlib import Path
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
 import jax.tree_util as jtu
-import matplotlib.pyplot as plt
 import optax
 from tqdm import tqdm
 
-from loader import JaxLoader, LLGDataset, to_device
+from loader import JaxLoader, LLGDataset
 from model import LLGEmulator
+from plot import plot_learning_curve, plot_m_means
+from utils import load_trajectory, rollout, stepper_fn
 
 jax.config.update("jax_compilation_cache_dir", ".jax_cache")
 
@@ -31,86 +39,135 @@ def update_fn(model, m0, m1, optimizer, state):
     return model, state, loss
 
 
+def train_epoch(model, loader, optimizer, state):
+    epoch_train_loss = 0
+    for batch in loader:
+        model, state, loss = update_fn(
+            model,
+            *batch,
+            optimizer=optimizer,
+            state=state,
+        )
+        epoch_train_loss += loss.item()
+    return model, state, epoch_train_loss / len(loader)
+
+
+def val_epoch(model, loader):
+    epoch_val_loss = 0
+    for batch in loader:
+        loss = loss_fn(model, *batch)
+        epoch_val_loss += loss.item()
+    return epoch_val_loss / len(loader)
+
+
+def test_rollout(model, m_true, H_ext, save_path):
+    m_pred = rollout(
+        lambda x: stepper_fn(x, model, H_ext),
+        n=99,
+        include_init=True,
+    )(m_true[0])
+
+    m_avg = jnp.mean(m_true, axis=(2, 3))
+    m_avg_pred = jnp.mean(m_pred, axis=(2, 3))
+
+    plot_m_means(
+        m_avg=m_avg,
+        m_avg_pred=m_avg_pred,
+        save_path=save_path,
+    )
+
+
 def main():
+    save_path = Path("results")
     train_dataset = LLGDataset(
-        "../micromagnetic-data/data/v2/low_res/train",
+        "../micromagnetic-data/data/v2/small/train",
         warmup_steps=1,
     )
     val_dataset = LLGDataset(
-        "../micromagnetic-data/data/v2/low_res/val",
+        "../micromagnetic-data/data/v2/small/val",
         warmup_steps=1,
     )
 
     train_loader = JaxLoader(
         dataset=train_dataset,
-        batch_size=32,
+        batch_size=128,
         shuffle=True,
         pin_memory=True,
     )
     val_loader = JaxLoader(
         dataset=val_dataset,
-        batch_size=32,
+        batch_size=128,
         shuffle=True,
         pin_memory=True,
     )
 
     train_ratio = len(train_dataset) / (len(val_dataset) + len(train_dataset))
-    print(f"num train samples = {len(train_loader)}")
-    print(f"num val samples = {len(val_loader)}")
+    print(f"num train samples = {len(train_dataset)}")
+    print(f"num val samples = {len(val_dataset)}")
     print(f"train ratio = {train_ratio * 100:.2f}%")
 
     key = jr.PRNGKey(0)
     key, subkey = jr.split(key)
 
-    # target device for single-device training
-    device = jax.devices()[1]
-
-    model = LLGEmulator(
-        num_modes=32,
-        num_blocks=4,
-        hidden_channels=64,
-        key=subkey,
-    )
-    dynamic, static = eqx.partition(model, eqx.is_array)
-    dynamic = to_device(dynamic, device=device)
-    model = eqx.combine(dynamic, static)
+    model = LLGEmulator(key=subkey)
 
     print(f"num parameters = {count_parameters(model)}")
+
+    # load rollout data and do init trajectory
+    m_true, H_ext = load_trajectory(
+        Path("../micromagnetic-data/data/v2/small/train/sample_1")
+    )
+    test_rollout(
+        model,
+        m_true=m_true,
+        H_ext=H_ext,
+        save_path=save_path / "checkpoints/trjs/trj_init.png",
+    )
 
     optimizer = optax.adam(1e-3)
     state = optimizer.init(eqx.filter(model, eqx.is_array))
 
     train_history = []
     val_history = []
-    with tqdm(range(64)) as bar:
+    with tqdm(range(256)) as bar:
         for i in bar:
-            epoch_train_loss = 0
-            for batch in train_loader:
-                batch = to_device(batch, device=device)
-                model, state, loss = update_fn(
+            # train pass
+            model, state, train_loss = train_epoch(
+                model=model,
+                loader=train_loader,
+                optimizer=optimizer,
+                state=state,
+            )
+            train_history.append(train_loss)
+
+            # val pass
+            val_loss = val_epoch(
+                model=model,
+                loader=val_loader,
+            )
+            val_history.append(val_loss)
+            bar.set_description(f"loss={val_loss:.4e}")
+
+            # test rollout and save weights
+            if (i + 1) % 8 == 0:
+                test_rollout(
                     model,
-                    *batch,
-                    optimizer=optimizer,
-                    state=state,
+                    m_true=m_true,
+                    H_ext=H_ext,
+                    save_path=save_path / f"checkpoints/trjs/trj_epoch_{i + 1}.png",
                 )
-                epoch_train_loss += loss.item()
-            train_history.append(epoch_train_loss / len(train_loader))
+                eqx.tree_serialise_leaves(
+                    save_path / f"checkpoints/weights/weights_epoch_{i + 1}.eqx",
+                    model,
+                )
 
-            epoch_val_loss = 0
-            for batch in val_loader:
-                batch = to_device(batch, device=device)
-                loss = loss_fn(model, *batch)
-                epoch_val_loss += loss.item()
-            bar.set_description(f"loss={epoch_val_loss / len(val_loader):.4e}")
-            val_history.append(epoch_val_loss / len(val_loader))
-            eqx.tree_serialise_leaves(f"weights_epoch_{i}.eqx", model)
+    eqx.tree_serialise_leaves(save_path / "weights.eqx", model)
 
-    eqx.tree_serialise_leaves("weights_alt.eqx", model)
-
-    plt.semilogy(train_history, label="train")
-    plt.semilogy(val_history, label="val")
-    plt.legend()
-    plt.savefig("learning_curve_alt.png")
+    plot_learning_curve(
+        train_history=train_history,
+        val_history=val_history,
+        save_path=save_path / "learning_curve.png",
+    )
 
 
 if __name__ == "__main__":

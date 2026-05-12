@@ -27,7 +27,7 @@ class LLGEmulator(ClassicFNO):
         super().__init__(
             num_spatial_dims=2,
             in_channels=6,
-            out_channels=2,
+            out_channels=3,
             hidden_channels=hidden_channels,
             num_modes=num_modes,
             num_blocks=num_blocks,
@@ -38,5 +38,5 @@ class LLGEmulator(ClassicFNO):
 
     def __call__(self, x) -> Array:
         x = super().__call__(x)
-        x = spherical_to_cartesian(x)
+        x = x / (jnp.linalg.norm(x, axis=0, keepdims=True) + 1e-8)
         return x
