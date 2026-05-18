@@ -8,25 +8,22 @@ from llg_emulator.jax_setup import configure_jax
 
 configure_jax()
 
+import argparse
 from pathlib import Path
 
 import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jr
-import optax
 from tqdm import tqdm
 
 from llg_emulator.checkpoint import make_run_dir
-from llg_emulator.config import SIZE, dataset_dir
+from llg_emulator.config import dataset_dir
 from llg_emulator.data import JaxLoader, LLGDataset, load_trajectory
+from llg_emulator.experiment import TrainConfig, build_activation, build_optimizer
 from llg_emulator.model import LLGEmulator
 from llg_emulator.plotting import plot_learning_curve, plot_m_means
 from llg_emulator.rollout import rollout_trajectory
-from llg_emulator.training import (
-    count_parameters,
-    train_epoch,
-    val_epoch,
-)
+from llg_emulator.training import count_parameters, train_epoch, val_epoch
 
 
 def test_rollout(model, m_true, H_ext, save_path: Path) -> None:
@@ -39,17 +36,38 @@ def test_rollout(model, m_true, H_ext, save_path: Path) -> None:
 
 
 def main():
-    save_path = make_run_dir()
-    print(f"run dir = {save_path}")
+    parser = argparse.ArgumentParser(description="Train the LLG emulator.")
+    parser.add_argument(
+        "--config",
+        default="configs/default.toml",
+        help="path to a TOML training config (fully specifies the run)",
+    )
+    args = parser.parse_args()
 
-    train_dataset = LLGDataset(dataset_dir("train"), warmup_steps=1)
-    val_dataset = LLGDataset(dataset_dir("val"), warmup_steps=1)
+    cfg = TrainConfig.from_toml(args.config)
+    save_path = make_run_dir()
+    cfg.save(save_path, args.config)
+    print(f"run dir = {save_path}")
+    print(f"config  = {args.config}")
+
+    train_dataset = LLGDataset(
+        dataset_dir("train", cfg.data.size), warmup_steps=cfg.data.warmup_steps
+    )
+    val_dataset = LLGDataset(
+        dataset_dir("val", cfg.data.size), warmup_steps=cfg.data.warmup_steps
+    )
 
     train_loader = JaxLoader(
-        dataset=train_dataset, batch_size=128, shuffle=True, pin_memory=True
+        dataset=train_dataset,
+        batch_size=cfg.data.batch_size,
+        shuffle=True,
+        pin_memory=True,
     )
     val_loader = JaxLoader(
-        dataset=val_dataset, batch_size=128, shuffle=True, pin_memory=True
+        dataset=val_dataset,
+        batch_size=cfg.data.batch_size,
+        shuffle=True,
+        pin_memory=True,
     )
 
     train_ratio = len(train_dataset) / (len(val_dataset) + len(train_dataset))
@@ -57,13 +75,20 @@ def main():
     print(f"num val samples = {len(val_dataset)}")
     print(f"train ratio = {train_ratio * 100:.2f}%")
 
-    key = jr.PRNGKey(0)
+    key = jr.PRNGKey(cfg.seed)
     key, subkey = jr.split(key)
-    model = LLGEmulator(key=subkey)
+    model = LLGEmulator(
+        hidden_channels=cfg.model.hidden_channels,
+        num_modes=cfg.model.num_modes,
+        num_blocks=cfg.model.num_blocks,
+        activation=build_activation(cfg.model.activation),
+        key=subkey,
+    )
     print(f"num parameters = {count_parameters(model)}")
 
     # rollout viz trajectory + initial checkpoint
-    m_true, H_ext = load_trajectory(dataset_dir("val") / "sample_292")
+    viz_path = dataset_dir("train", cfg.data.size).parent / cfg.data.viz_sample
+    m_true, H_ext = load_trajectory(viz_path)
     test_rollout(
         model,
         m_true=m_true,
@@ -74,12 +99,12 @@ def main():
         save_path / "checkpoints/weights/weights_epoch_0.eqx", model
     )
 
-    optimizer = optax.adam(1e-3)
+    optimizer = build_optimizer(cfg.optim)
     state = optimizer.init(eqx.filter(model, eqx.is_array))
 
     train_history = []
     val_history = []
-    with tqdm(range(10)) as bar:
+    with tqdm(range(cfg.epochs)) as bar:
         for i in bar:
             model, state, train_loss = train_epoch(
                 model=model,
@@ -93,7 +118,7 @@ def main():
             val_history.append(val_loss)
             bar.set_description(f"loss={val_loss:.4e}")
 
-            if (i + 1) % 8 == 0:
+            if (i + 1) % cfg.checkpoint_every == 0:
                 test_rollout(
                     model,
                     m_true=m_true,

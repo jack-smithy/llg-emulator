@@ -19,6 +19,7 @@ import matplotlib.pyplot as plt
 from llg_emulator.checkpoint import load_model
 from llg_emulator.config import RESULTS_DIR, SP4_PATH, dataset_dir
 from llg_emulator.data import JaxLoader, LLGDataset, load_trajectory
+from llg_emulator.experiment import TrainConfig
 from llg_emulator.metrics import correlation, nRMSE
 from llg_emulator.rollout import rollout_trajectory
 from llg_emulator.training import loss_fn
@@ -27,9 +28,9 @@ from llg_emulator.training import loss_fn
 RUN_DIR = RESULTS_DIR / "2026-05-18_13-58-16"
 
 
-def dataset_loss(model, split: str) -> float:
+def dataset_loss(model, split: str, size: str, warmup_steps: int) -> float:
     """Mean one-step MSE over a data split."""
-    dataset = LLGDataset(dataset_dir(split), warmup_steps=1)
+    dataset = LLGDataset(dataset_dir(split, size), warmup_steps=warmup_steps)
     loader = JaxLoader(dataset=dataset, batch_size=128, shuffle=False)
     total = 0.0
     for batch in loader:
@@ -46,11 +47,14 @@ def rollout_stats(model, sample_path: Path):
 
 
 def main():
-    key = jr.PRNGKey(0)
-    model = load_model(key=key, weights_path=RUN_DIR / "weights.eqx")
+    cfg = TrainConfig.from_run_dir(RUN_DIR)
+    key = jr.PRNGKey(cfg.seed)
+    model = load_model(
+        key=key, weights_path=RUN_DIR / "weights.eqx", model_config=cfg.model
+    )
 
-    train_loss = dataset_loss(model, "train")
-    val_loss = dataset_loss(model, "val")
+    train_loss = dataset_loss(model, "train", cfg.data.size, cfg.data.warmup_steps)
+    val_loss = dataset_loss(model, "val", cfg.data.size, cfg.data.warmup_steps)
     nrmse_curve, corr = rollout_stats(model, SP4_PATH)
 
     stats = {

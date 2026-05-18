@@ -1,0 +1,21 @@
+# Full training run (256 epochs).
+
+seed = 0
+epochs = 256
+checkpoint_every = 8
+
+[model]
+hidden_channels = 32
+num_modes = 12
+num_blocks = 4
+activation = "gelu"
+
+[data]
+size = "small"          # small | med
+warmup_steps = 1
+batch_size = 128
+viz_sample = "val/sample_292"
+
+[optim]
+name = "adam"
+lr = 1e-3

@@ -5,12 +5,29 @@ import equinox as eqx
 from jaxtyping import PRNGKeyArray
 
 from llg_emulator.config import RESULTS_DIR
+from llg_emulator.experiment import ModelConfig, build_activation
 from llg_emulator.model import LLGEmulator
 
 
-def load_model(key: PRNGKeyArray, weights_path) -> LLGEmulator:
-    """Rebuild an LLGEmulator (default architecture) and load its weights."""
-    model = LLGEmulator(key=key)
+def load_model(
+    key: PRNGKeyArray,
+    weights_path,
+    model_config: ModelConfig | None = None,
+) -> LLGEmulator:
+    """Rebuild an LLGEmulator from its architecture config and load weights.
+
+    Pass the run's ModelConfig (from TrainConfig.from_run_dir) so checkpoints
+    trained with a non-default architecture reload correctly. Defaults to
+    ModelConfig() (the historical default architecture).
+    """
+    cfg = model_config or ModelConfig()
+    model = LLGEmulator(
+        hidden_channels=cfg.hidden_channels,
+        num_modes=cfg.num_modes,
+        num_blocks=cfg.num_blocks,
+        activation=build_activation(cfg.activation),
+        key=key,
+    )
     return eqx.tree_deserialise_leaves(weights_path, model)
 
 

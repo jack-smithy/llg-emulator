@@ -23,6 +23,7 @@ import matplotlib.pyplot as plt
 from llg_emulator.checkpoint import load_model
 from llg_emulator.config import RESULTS_DIR, SP4_PATH
 from llg_emulator.data import load_trajectory
+from llg_emulator.experiment import TrainConfig
 from llg_emulator.rollout import rollout_trajectory
 
 # point this at the run dir to animate
@@ -30,7 +31,8 @@ RUN_DIR = RESULTS_DIR / "baseline"
 
 
 def main():
-    key = jr.PRNGKey(0)
+    cfg = TrainConfig.from_run_dir(RUN_DIR)
+    key = jr.PRNGKey(cfg.seed)
 
     m_true, H_ext = load_trajectory(path=SP4_PATH)
     n_steps = m_true.shape[0]
@@ -47,7 +49,9 @@ def main():
 
     m_means = []
     for weights_path in weights_paths:
-        model = load_model(key=key, weights_path=weights_path)
+        model = load_model(
+            key=key, weights_path=weights_path, model_config=cfg.model
+        )
         m_pred = rollout_trajectory(model, m_true, H_ext, include_init=True)
         m_means.append(jnp.mean(m_pred, axis=(-2, -1)))
     m_means = jnp.stack(m_means, axis=0)  # (num_checkpoints, T, 3)

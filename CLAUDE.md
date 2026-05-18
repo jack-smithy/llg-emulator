@@ -59,23 +59,33 @@ rollout output and references are directly comparable.
 - `metrics.py` — `nRMSE`, `correlation`.
 - `training.py` — `count_parameters`, `loss_fn` (one-step MSE, single home),
   `update_fn`, `train_epoch`, `val_epoch`.
-- `checkpoint.py` — `load_model`, `make_run_dir` (timestamped run dir).
+- `experiment.py` — `TrainConfig` (+ nested `ModelConfig`/`DataConfig`/
+  `OptimConfig`) typed dataclasses. `from_toml` (stdlib `tomllib`, unknown
+  keys raise), `save` (copies source `.toml` + writes `resolved_config.json`),
+  `from_run_dir`, and `build_activation`/`build_optimizer` str→callable maps.
+- `checkpoint.py` — `load_model(key, weights_path, model_config)` (rebuilds
+  the exact architecture from a `ModelConfig`), `make_run_dir`.
 - `plotting.py` — `plot_m_means`, `plot_learning_curve`.
 
 `scripts/` — entrypoints (`uv run scripts/<x>.py`), each begins with the
 device/jax bootstrap:
 
-- `train.py` — trains `LLGEmulator` (Adam 1e-3, batch 128, one-step MSE) into
-  a fresh `results/<timestamp>/`; per-epoch-0 + every-8-epoch checkpoints and
-  rollout plots; final `weights.eqx` + `learning_curve.png`.
-- `evaluate.py` — loads `RUN_DIR/weights.eqx`, train/val one-step MSE + sp4
-  rollout nRMSE/correlation → `RUN_DIR/metrics.json` + `rollout_nrmse.png`.
+- `train.py` — `uv run scripts/train.py --config configs/<name>.toml`
+  (default `configs/default.toml`). The TOML fully specifies the run; it is
+  copied into the run dir as `config.toml` plus a fully-resolved
+  `resolved_config.json`. Trains into a fresh `results/<timestamp>/`;
+  epoch-0 + every-`checkpoint_every` checkpoints and rollout plots; final
+  `weights.eqx` + `learning_curve.png`.
+- `evaluate.py` — reads `RUN_DIR`'s `resolved_config.json` to rebuild the
+  exact model/data, computes train/val one-step MSE + sp4 rollout
+  nRMSE/correlation → `RUN_DIR/metrics.json` + `rollout_nrmse.png`.
 - `animate.py` — animates sp4 rollout ⟨m⟩ across `RUN_DIR` checkpoints vs. a
   static ground truth → `RUN_DIR/training.gif`.
 
-`RUN_DIR` is a top-of-file constant in `evaluate.py`/`animate.py` (default
-`results/baseline`); point it at the run to evaluate. `main.ipynb` is a
-scratch notebook.
+Training configs live in `configs/*.toml` (`default.toml` = 10-epoch quick
+run; `full.toml` = 256 epochs); copy one per experiment — the file is the
+record. `RUN_DIR` is a top-of-file constant in `evaluate.py`/`animate.py`;
+point it at the run to evaluate. `main.ipynb` is a scratch notebook.
 
 ## Known issues / gotchas
 
