@@ -11,9 +11,9 @@ num_blocks = 4
 activation = "gelu"
 
 [data]
-size = "small"          # small | med
+size = "med"
 warmup_steps = 1
-batch_size = 128
+batch_size = 256
 viz_sample = "val/sample_292"
 
 [optim]

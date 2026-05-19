@@ -27,7 +27,7 @@ from llg_emulator.experiment import TrainConfig
 from llg_emulator.rollout import rollout_trajectory
 
 # point this at the run dir to animate
-RUN_DIR = RESULTS_DIR / "baseline"
+RUN_DIR = RESULTS_DIR / "2026-05-18_21-03-13"
 
 
 def main():
@@ -49,9 +49,7 @@ def main():
 
     m_means = []
     for weights_path in weights_paths:
-        model = load_model(
-            key=key, weights_path=weights_path, model_config=cfg.model
-        )
+        model = load_model(key=key, weights_path=weights_path, model_config=cfg.model)
         m_pred = rollout_trajectory(model, m_true, H_ext, include_init=True)
         m_means.append(jnp.mean(m_pred, axis=(-2, -1)))
     m_means = jnp.stack(m_means, axis=0)  # (num_checkpoints, T, 3)

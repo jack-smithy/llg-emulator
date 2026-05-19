@@ -25,7 +25,7 @@ from llg_emulator.rollout import rollout_trajectory
 from llg_emulator.training import loss_fn
 
 # point this at the run dir to evaluate
-RUN_DIR = RESULTS_DIR / "2026-05-18_13-58-16"
+RUN_DIR = RESULTS_DIR / "2026-05-18_21-03-13"
 
 
 def dataset_loss(model, split: str, size: str, warmup_steps: int) -> float:
@@ -47,15 +47,20 @@ def rollout_stats(model, sample_path: Path):
 
 
 def main():
+    print("starting evaluation")
     cfg = TrainConfig.from_run_dir(RUN_DIR)
     key = jr.PRNGKey(cfg.seed)
     model = load_model(
         key=key, weights_path=RUN_DIR / "weights.eqx", model_config=cfg.model
     )
+    print("model loaded")
 
     train_loss = dataset_loss(model, "train", cfg.data.size, cfg.data.warmup_steps)
     val_loss = dataset_loss(model, "val", cfg.data.size, cfg.data.warmup_steps)
+    print("calculated dataset loss")
+
     nrmse_curve, corr = rollout_stats(model, SP4_PATH)
+    print("rollout trajectory done\n\n")
 
     stats = {
         "train_loss": train_loss,

@@ -2,7 +2,7 @@
 # Quick-iteration run (10 epochs). Copy this file per experiment.
 
 seed = 0
-epochs = 10
+epochs = 32
 checkpoint_every = 8
 
 [model]
@@ -15,7 +15,7 @@ activation = "gelu"
 size = "small"          # small | med
 warmup_steps = 1
 batch_size = 128
-viz_sample = "val/sample_292"
+viz_sample = "sp4/sample_0"
 
 [optim]
 name = "adam"

@@ -47,8 +47,15 @@ rollout output and references are directly comparable.
   `SIZE`, `SP4_PATH`, `RESULTS_DIR`, `dataset_dir(split, size)`.
 - `jax_setup.py` — `configure_jax()` (JIT cache dir).
 - `model.py` — `LLGEmulator` subclasses `pdequinox.arch.ClassicFNO` (2D FNO,
-  6 in / 3 out, default 32 hidden ch, 12 modes, 4 blocks, GELU). Inputs are
-  `[m (3), H_ext broadcast (3)]`; output next `m`, L2-normalized per cell.
+  3 in / 3 out, default 32 hidden ch, 12 modes, 4 blocks, GELU). The
+  6-channel feature `[m_t (3), H_ext broadcast (3)]` is split inside the
+  model: only `m_t` flows through the FNO; the constant `H_ext` vector
+  drives a `_FiLM` conditioner that modulates the hidden features after the
+  lifting layer and after every block (zero-init final layer ⇒ identity
+  modulation at start). Residual formulation: the FNO output `dm` is
+  projected onto `m_t`'s tangent plane (LLG keeps `|m|=1`), then
+  `m_{t+1} = normalize(m_t + dm_perp)`. Note: weights from runs trained
+  before this arch change (6-channel FNO) are no longer reloadable.
   `spherical_to_cartesian` defined but unused (kept for possible future use).
 - `data.py` — `LLGDataset`, `JaxLoader`, `jax_collate`, `to_device`,
   `load_metadata`, `load_trajectory`. `_nondim_field` (H_ext / Ms) is shared

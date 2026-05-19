@@ -115,7 +115,7 @@ def load_trajectory(path: Path):
     Returns (m, H_ext) with m shape (T, 3, H, W); same time-axis convention as
     LLGDataset (index 0 = raw frame 1).
     """
-    m = jnp.load(path / "m.npy")
+    m = jnp.load(path / "m.npy", mmap_mode="r")
     m = m[1:, :, :, 0, :]
     m = rearrange(m, "t h w c -> t c h w")
 
