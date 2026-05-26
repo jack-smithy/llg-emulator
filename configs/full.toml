@@ -14,7 +14,7 @@ activation = "gelu"
 size = "med"
 warmup_steps = 1
 batch_size = 256
-viz_sample = "val/sample_292"
+viz_sample = "sp4/sample_0"
 
 [optim]
 name = "adam"
