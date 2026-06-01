@@ -5,16 +5,6 @@ state and plot the spatial-average <m_x>, <m_y>, <m_z> over time, animated
 across checkpoints against a static ground-truth reference.
 """
 
-import os
-
-from llg_emulator.config import DEVICE
-
-os.environ["CUDA_VISIBLE_DEVICES"] = DEVICE
-
-from llg_emulator.jax_setup import configure_jax
-
-configure_jax()
-
 import jax.numpy as jnp
 import jax.random as jr
 import matplotlib.animation as ani
@@ -24,10 +14,13 @@ from llg_emulator.checkpoint import load_model
 from llg_emulator.config import RESULTS_DIR, SP4_PATH
 from llg_emulator.data import load_trajectory
 from llg_emulator.experiment import TrainConfig
+from llg_emulator.jax_setup import configure_jax
 from llg_emulator.rollout import rollout_trajectory
 
+configure_jax()
+
 # point this at the run dir to animate
-RUN_DIR = RESULTS_DIR / "2026-05-18_21-03-13"
+RUN_DIR = RESULTS_DIR / "2026-05-26_12-18-10"
 
 
 def main():

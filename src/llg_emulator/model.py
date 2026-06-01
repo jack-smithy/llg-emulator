@@ -5,7 +5,9 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import Array, PRNGKeyArray
-from pdequinox.arch import ClassicFNO
+from pdequinox.arch import ClassicResNet
+
+from llg_emulator.physics import DemagField
 
 
 def spherical_to_cartesian(arr: Array) -> Array:
@@ -30,6 +32,9 @@ class _FiLM(eqx.Module):
         k1, k2 = jr.split(key)
         self.l1 = eqx.nn.Linear(in_dim, hidden, key=k1)
         l2 = eqx.nn.Linear(hidden, out_dim, key=k2)
+
+        assert l2.bias is not None
+
         self.l2 = eqx.tree_at(
             lambda m: (m.weight, m.bias),
             l2,
@@ -40,45 +45,58 @@ class _FiLM(eqx.Module):
         return self.l2(jax.nn.gelu(self.l1(h)))
 
 
-class LLGEmulator(ClassicFNO):
+class LLGEmulator(ClassicResNet):
     """FNO predicting next m via a FiLM-conditioned tangent residual.
 
     The 6-channel input feature [m_t (3), H_ext broadcast (3)] is split
-    inside the model: only m_t flows through the FNO (in_channels=3), while
-    the constant H_ext vector drives a FiLM conditioner that modulates the
-    hidden features after the lifting layer and after every block. The FNO
-    output dm is projected onto m_t's tangent plane (LLG keeps |m|=1), then
-    m_{t+1} = normalize(m_t + dm_perp).
+    inside the model: m_t is concatenated with the exact demag field
+    h_demag = demag(m_t) (computed by neuralmag, see physics.DemagField) to
+    form a 6-channel FNO input (in_channels=6), so the FNO only has to learn
+    the short-range terms (exchange/anisotropy) on top of the supplied
+    long-range demag field. The constant H_ext vector drives a FiLM
+    conditioner that modulates the hidden features after the lifting layer and
+    after every block. The FNO output dm is projected onto m_t's tangent plane
+    (LLG keeps |m|=1), then m_{t+1} = normalize(m_t + dm_perp). The demag
+    submodule carries no trainable parameters; its tensor must be frozen
+    during optimisation (see training.trainable_filter).
     """
 
     film: _FiLM
+    demag: DemagField
     n_pts: int = eqx.field(static=True)
 
     def __init__(
         self,
         hidden_channels: int = 32,
-        num_modes: int = 12,
         num_blocks: int = 4,
         activation: Callable = jax.nn.gelu,
+        mesh_n: tuple = (256, 256, 1),
+        mesh_dx: tuple = (5e-9, 5e-9, 3e-9),
+        demag_p: int = 20,
         *,
         key: PRNGKeyArray,
     ):
-        fno_key, film_key = jr.split(key)
+        model_key, film_key = jr.split(key)
         super().__init__(
             num_spatial_dims=2,
-            in_channels=3,
+            in_channels=6,  # m_t (3) + demag(m_t) (3)
             out_channels=3,
             hidden_channels=hidden_channels,
-            num_modes=num_modes,
             num_blocks=num_blocks,
             activation=activation,
-            boundary_mode=None,
-            key=fno_key,
+            boundary_mode="neumann",
+            key=model_key,
         )
         self.n_pts = num_blocks + 1  # post-lifting + one per block
         self.film = _FiLM(
-            3, hidden_channels, self.n_pts * 2 * hidden_channels, key=film_key
+            3,
+            hidden_channels,
+            self.n_pts * 2 * hidden_channels,
+            key=film_key,
         )
+        # Ms cancels under the nondim (h_demag / Ms) output, so any positive
+        # value gives the nondimensionalised demag field the model consumes.
+        self.demag = DemagField(mesh_n, mesh_dx, Ms=1.0, p=demag_p)
 
     def __call__(self, x: Array) -> Array:
         m = x[:3]  # m_t
@@ -91,10 +109,11 @@ class LLGEmulator(ClassicFNO):
         def modulate(h, i):
             return g[i, 0][:, None, None] * h + g[i, 1][:, None, None]
 
-        h = modulate(self.lifting(m), 0)
+        model_in = jnp.concatenate([m, self.demag(m)], axis=0)  # (6, A, B)
+        h = modulate(self.lifting(model_in), 0)  # type: ignore
         for i, block in enumerate(self.blocks, start=1):
-            h = modulate(block(h), i)
-        dm = self.projection(h)
+            h = modulate(block(h), i)  # type: ignore
+        dm = self.projection(h)  # type: ignore
 
         # tangent-space residual: the true change is perpendicular to m
         m_hat = m / (jnp.linalg.norm(m, axis=0, keepdims=True) + 1e-8)

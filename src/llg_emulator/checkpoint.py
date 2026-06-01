@@ -26,6 +26,9 @@ def load_model(
         num_modes=cfg.num_modes,
         num_blocks=cfg.num_blocks,
         activation=build_activation(cfg.activation),
+        mesh_n=cfg.mesh_n,
+        mesh_dx=cfg.mesh_dx,
+        demag_p=cfg.demag_p,
         key=key,
     )
     return eqx.tree_deserialise_leaves(weights_path, model)

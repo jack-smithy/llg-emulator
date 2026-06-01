@@ -1,13 +1,3 @@
-import os
-
-from llg_emulator.config import DEVICE
-
-os.environ["CUDA_VISIBLE_DEVICES"] = DEVICE
-
-from llg_emulator.jax_setup import configure_jax
-
-configure_jax()
-
 import argparse
 from pathlib import Path
 
@@ -20,10 +10,18 @@ from llg_emulator.checkpoint import make_run_dir
 from llg_emulator.config import dataset_dir
 from llg_emulator.data import JaxLoader, LLGDataset, load_trajectory
 from llg_emulator.experiment import TrainConfig, build_activation, build_optimizer
+from llg_emulator.jax_setup import configure_jax
 from llg_emulator.model import LLGEmulator
 from llg_emulator.plotting import plot_learning_curve, plot_m_means
 from llg_emulator.rollout import rollout_trajectory
-from llg_emulator.training import count_parameters, train_epoch, val_epoch
+from llg_emulator.training import (
+    count_parameters,
+    train_epoch,
+    trainable_filter,
+    val_epoch,
+)
+
+configure_jax()
 
 
 def test_rollout(model, m_true, H_ext, save_path: Path) -> None:
@@ -79,9 +77,11 @@ def main():
     key, subkey = jr.split(key)
     model = LLGEmulator(
         hidden_channels=cfg.model.hidden_channels,
-        num_modes=cfg.model.num_modes,
         num_blocks=cfg.model.num_blocks,
         activation=build_activation(cfg.model.activation),
+        mesh_n=cfg.model.mesh_n,
+        mesh_dx=cfg.model.mesh_dx,
+        demag_p=cfg.model.demag_p,
         key=subkey,
     )
     print(f"num parameters = {count_parameters(model)}")
@@ -100,7 +100,7 @@ def main():
     )
 
     optimizer = build_optimizer(cfg.optim)
-    state = optimizer.init(eqx.filter(model, eqx.is_array))
+    state = optimizer.init(eqx.filter(model, trainable_filter(model)))
 
     train_history = []
     val_history = []

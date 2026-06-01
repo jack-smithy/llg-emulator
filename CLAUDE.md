@@ -47,29 +47,49 @@ rollout output and references are directly comparable.
   `SIZE`, `SP4_PATH`, `RESULTS_DIR`, `dataset_dir(split, size)`.
 - `jax_setup.py` — `configure_jax()` (JIT cache dir).
 - `model.py` — `LLGEmulator` subclasses `pdequinox.arch.ClassicFNO` (2D FNO,
-  3 in / 3 out, default 32 hidden ch, 12 modes, 4 blocks, GELU). The
+  **6 in** / 3 out, default 32 hidden ch, 12 modes, 4 blocks, GELU). The
   6-channel feature `[m_t (3), H_ext broadcast (3)]` is split inside the
-  model: only `m_t` flows through the FNO; the constant `H_ext` vector
-  drives a `_FiLM` conditioner that modulates the hidden features after the
-  lifting layer and after every block (zero-init final layer ⇒ identity
-  modulation at start). Residual formulation: the FNO output `dm` is
-  projected onto `m_t`'s tangent plane (LLG keeps `|m|=1`), then
-  `m_{t+1} = normalize(m_t + dm_perp)`. Note: weights from runs trained
-  before this arch change (6-channel FNO) are no longer reloadable.
-  `spherical_to_cartesian` defined but unused (kept for possible future use).
+  model: `m_t` is concatenated with the exact demag field
+  `h_demag = demag(m_t)` (a `physics.DemagField` submodule, recomputed every
+  call/rollout step) into the FNO's 6 input channels, so the FNO only learns
+  the short-range terms (exchange/anisotropy) on top of the supplied
+  long-range demag field; the constant `H_ext` vector drives a `_FiLM`
+  conditioner that modulates the hidden features after the lifting layer and
+  after every block (zero-init final layer ⇒ identity modulation at start).
+  Residual formulation: the FNO output `dm` is projected onto `m_t`'s tangent
+  plane (LLG keeps `|m|=1`), then `m_{t+1} = normalize(m_t + dm_perp)`. The
+  `demag` submodule has no trainable params; its tensor `demag.N` must be
+  frozen via `training.trainable_filter` (already wired into `update_fn` and
+  the optimiser init). Note: weights from runs trained before this arch
+  change are no longer reloadable. `spherical_to_cartesian` defined but
+  unused (kept for possible future use).
 - `data.py` — `LLGDataset`, `JaxLoader`, `jax_collate`, `to_device`,
   `load_metadata`, `load_trajectory`. `_nondim_field` (H_ext / Ms) is shared
   by the torch (`LLGDataset`) and jax (`load_trajectory`) paths.
 - `rollout.py` — `stepper_fn`, `rollout` (`jax.lax.scan` unroll), and
   `rollout_trajectory(model, m_true, H_ext)` (the one-call helper used by all
   three scripts).
+- `physics.py` — `DemagField` (Equinox module) wraps neuralmag's demag
+  solver: at construction it builds a neuralmag `State`/`DemagField` for the
+  mesh geometry (`n`, `dx`, `Ms`) and caches the precomputed demag tensor `N`
+  as a buffer (no trainable params); `__call__(m)` applies neuralmag's FFT
+  `h_cell` convolution. Single channel-first sample `(3, A, B)` → demag field
+  `(3, A, B)`, nondimensionalized by `Ms` by default (matching the H_ext / Ms
+  input convention). `from_params(params)` builds it from a sample's
+  params.json. Intended as an extra NN input so the surrogate only learns
+  short-range interactions (exchange/anisotropy). jit/vmap-friendly.
 - `metrics.py` — `nRMSE`, `correlation`.
-- `training.py` — `count_parameters`, `loss_fn` (one-step MSE, single home),
-  `update_fn`, `train_epoch`, `val_epoch`.
+- `training.py` — `count_parameters` (trainable only), `trainable_filter`
+  (bool pytree freezing the fixed `demag.N`), `loss_fn` (one-step MSE, single
+  home), `update_fn` (partitions out the frozen demag tensor before the grad
+  step), `train_epoch`, `val_epoch`.
 - `experiment.py` — `TrainConfig` (+ nested `ModelConfig`/`DataConfig`/
-  `OptimConfig`) typed dataclasses. `from_toml` (stdlib `tomllib`, unknown
-  keys raise), `save` (copies source `.toml` + writes `resolved_config.json`),
-  `from_run_dir`, and `build_activation`/`build_optimizer` str→callable maps.
+  `OptimConfig`) typed dataclasses. `ModelConfig` also carries the demag mesh
+  geometry (`mesh_n`, `mesh_dx`, `demag_p`, defaulting to the v2 256x256x1
+  film) so the demag tensor reconstructs exactly on checkpoint reload.
+  `from_toml` (stdlib `tomllib`, unknown keys raise), `save` (copies source
+  `.toml` + writes `resolved_config.json`), `from_run_dir`, and
+  `build_activation`/`build_optimizer` str→callable maps.
 - `checkpoint.py` — `load_model(key, weights_path, model_config)` (rebuilds
   the exact architecture from a `ModelConfig`), `make_run_dir`.
 - `plotting.py` — `plot_m_means`, `plot_learning_curve`.

@@ -20,9 +20,13 @@ import optax
 @dataclass
 class ModelConfig:
     hidden_channels: int = 32
-    num_modes: int = 12
     num_blocks: int = 4
     activation: str = "gelu"  # gelu | relu | tanh
+    # demag-field input (physics.DemagField): mesh geometry the demag tensor
+    # is precomputed for. Defaults match the v2 dataset (256x256x1 film).
+    mesh_n: tuple = (256, 256, 1)
+    mesh_dx: tuple = (5e-9, 5e-9, 3e-9)
+    demag_p: int = 20
 
 
 @dataclass

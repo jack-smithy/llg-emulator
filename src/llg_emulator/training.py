@@ -5,8 +5,19 @@ import jax.tree_util as jtu
 from jaxtyping import Array
 
 
+def trainable_filter(model: eqx.Module):
+    """Bool pytree: True for trainable leaves, False for the fixed demag tensor.
+
+    The demag submodule is a physical operator with no learnable parameters,
+    but its precomputed tensor `demag.N` is a large array leaf that the default
+    is_array filter would otherwise feed to the optimiser. Freeze it.
+    """
+    spec = jtu.tree_map(eqx.is_inexact_array, model)
+    return eqx.tree_at(lambda m: m.demag.N, spec, replace=False)
+
+
 def count_parameters(model: eqx.Module) -> int:
-    return sum(p.size for p in jtu.tree_leaves(eqx.filter(model, eqx.is_array)))
+    return sum(p.size for p in jtu.tree_leaves(eqx.filter(model, trainable_filter(model))))
 
 
 @eqx.filter_jit
@@ -18,10 +29,15 @@ def loss_fn(model: eqx.Module, m0: Array, m1: Array) -> Array:
 
 @eqx.filter_jit
 def update_fn(model, m0, m1, optimizer, state):
-    loss, grad = eqx.filter_value_and_grad(loss_fn)(model, m0, m1)
+    diff, static = eqx.partition(model, trainable_filter(model))
+
+    def diff_loss(diff):
+        return loss_fn(eqx.combine(diff, static), m0, m1)
+
+    loss, grad = eqx.filter_value_and_grad(diff_loss)(diff)
     updates, state = optimizer.update(grad, state)
-    model = eqx.apply_updates(model, updates)
-    return model, state, loss
+    diff = eqx.apply_updates(diff, updates)
+    return eqx.combine(diff, static), state, loss
 
 
 def train_epoch(model, loader, optimizer, state):

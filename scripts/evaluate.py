@@ -1,13 +1,3 @@
-import os
-
-from llg_emulator.config import DEVICE
-
-os.environ["CUDA_VISIBLE_DEVICES"] = DEVICE
-
-from llg_emulator.jax_setup import configure_jax
-
-configure_jax()
-
 import json
 from pathlib import Path
 
@@ -20,12 +10,14 @@ from llg_emulator.checkpoint import load_model
 from llg_emulator.config import RESULTS_DIR, SP4_PATH, dataset_dir
 from llg_emulator.data import JaxLoader, LLGDataset, load_trajectory
 from llg_emulator.experiment import TrainConfig
+from llg_emulator.jax_setup import configure_jax
 from llg_emulator.metrics import correlation, nRMSE
 from llg_emulator.rollout import rollout_trajectory
 from llg_emulator.training import loss_fn
 
+configure_jax()
 # point this at the run dir to evaluate
-RUN_DIR = RESULTS_DIR / "2026-05-18_21-03-13"
+RUN_DIR = RESULTS_DIR / "2026-05-26_12-18-10"
 
 
 def dataset_loss(model, split: str, size: str, warmup_steps: int) -> float:

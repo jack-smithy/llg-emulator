@@ -3,7 +3,6 @@ imported before CUDA_VISIBLE_DEVICES is set."""
 
 from pathlib import Path
 
-DEVICE = "2"
 JAX_CACHE_DIR = ".jax_cache"
 
 DATA_ROOT = Path("../micromagnetic-data/data/dynamics/v2")
