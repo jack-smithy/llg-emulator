@@ -10,15 +10,7 @@ from pdequinox.arch import ClassicResNet
 from llg_emulator.physics import DemagField
 
 
-def spherical_to_cartesian(arr: Array) -> Array:
-    theta, phi = arr[0], arr[1]
-    x = jnp.sin(theta) * jnp.cos(phi)
-    y = jnp.sin(theta) * jnp.sin(phi)
-    z = jnp.cos(theta)
-    return jnp.stack([x, y, z], axis=0)
-
-
-class _FiLM(eqx.Module):
+class FiLM(eqx.Module):
     """Maps the H_ext 3-vector to per-(stage, channel) (gamma, beta).
 
     Final layer is zero-initialised so at start gamma=1, beta=0 (identity
@@ -45,23 +37,9 @@ class _FiLM(eqx.Module):
         return self.l2(jax.nn.gelu(self.l1(h)))
 
 
-class LLGEmulator(ClassicResNet):
-    """FNO predicting next m via a FiLM-conditioned tangent residual.
-
-    The 6-channel input feature [m_t (3), H_ext broadcast (3)] is split
-    inside the model: m_t is concatenated with the exact demag field
-    h_demag = demag(m_t) (computed by neuralmag, see physics.DemagField) to
-    form a 6-channel FNO input (in_channels=6), so the FNO only has to learn
-    the short-range terms (exchange/anisotropy) on top of the supplied
-    long-range demag field. The constant H_ext vector drives a FiLM
-    conditioner that modulates the hidden features after the lifting layer and
-    after every block. The FNO output dm is projected onto m_t's tangent plane
-    (LLG keeps |m|=1), then m_{t+1} = normalize(m_t + dm_perp). The demag
-    submodule carries no trainable parameters; its tensor must be frozen
-    during optimisation (see training.trainable_filter).
-    """
-
-    film: _FiLM
+class LLGEmulator(eqx.Module):
+    film: FiLM
+    backbone: ClassicResNet
     demag: DemagField
     n_pts: int = eqx.field(static=True)
 
@@ -77,7 +55,7 @@ class LLGEmulator(ClassicResNet):
         key: PRNGKeyArray,
     ):
         model_key, film_key = jr.split(key)
-        super().__init__(
+        self.backbone = ClassicResNet(
             num_spatial_dims=2,
             in_channels=6,  # m_t (3) + demag(m_t) (3)
             out_channels=3,
@@ -88,7 +66,7 @@ class LLGEmulator(ClassicResNet):
             key=model_key,
         )
         self.n_pts = num_blocks + 1  # post-lifting + one per block
-        self.film = _FiLM(
+        self.film = FiLM(
             3,
             hidden_channels,
             self.n_pts * 2 * hidden_channels,
@@ -98,9 +76,8 @@ class LLGEmulator(ClassicResNet):
         # value gives the nondimensionalised demag field the model consumes.
         self.demag = DemagField(mesh_n, mesh_dx, Ms=1.0, p=demag_p)
 
-    def __call__(self, x: Array) -> Array:
-        m = x[:3]  # m_t
-        H = x[3:, 0, 0]  # constant H_ext 3-vector (broadcast in space)
+    def __call__(self, m0: Array, H: Array) -> Array:
+        m = m0[:3]  # m_t
 
         g = self.film(H).reshape(self.n_pts, 2, -1)
         # gamma = 1 + raw so zero-init -> identity modulation
@@ -110,10 +87,10 @@ class LLGEmulator(ClassicResNet):
             return g[i, 0][:, None, None] * h + g[i, 1][:, None, None]
 
         model_in = jnp.concatenate([m, self.demag(m)], axis=0)  # (6, A, B)
-        h = modulate(self.lifting(model_in), 0)  # type: ignore
-        for i, block in enumerate(self.blocks, start=1):
+        h = modulate(self.backbone.lifting(model_in), 0)  # type: ignore
+        for i, block in enumerate(self.backbone.blocks, start=1):
             h = modulate(block(h), i)  # type: ignore
-        dm = self.projection(h)  # type: ignore
+        dm = self.backbone.projection(h)  # type: ignore
 
         # tangent-space residual: the true change is perpendicular to m
         m_hat = m / (jnp.linalg.norm(m, axis=0, keepdims=True) + 1e-8)

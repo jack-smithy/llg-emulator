@@ -8,7 +8,7 @@ from tqdm import tqdm
 
 from llg_emulator.checkpoint import make_run_dir
 from llg_emulator.config import dataset_dir
-from llg_emulator.data import JaxLoader, LLGDataset, load_trajectory
+from llg_emulator.data import load_trajectory, dataloader_factory, LLGStepperSource
 from llg_emulator.experiment import TrainConfig, build_activation, build_optimizer
 from llg_emulator.jax_setup import configure_jax
 from llg_emulator.model import LLGEmulator
@@ -48,25 +48,11 @@ def main():
     print(f"run dir = {save_path}")
     print(f"config  = {args.config}")
 
-    train_dataset = LLGDataset(
-        dataset_dir("train", cfg.data.size), warmup_steps=cfg.data.warmup_steps
-    )
-    val_dataset = LLGDataset(
-        dataset_dir("val", cfg.data.size), warmup_steps=cfg.data.warmup_steps
-    )
+    train_dataset = LLGStepperSource(dataset_dir("train", cfg.data.size))
+    val_dataset = LLGStepperSource(dataset_dir("val", cfg.data.size))
 
-    train_loader = JaxLoader(
-        dataset=train_dataset,
-        batch_size=cfg.data.batch_size,
-        shuffle=True,
-        pin_memory=True,
-    )
-    val_loader = JaxLoader(
-        dataset=val_dataset,
-        batch_size=cfg.data.batch_size,
-        shuffle=True,
-        pin_memory=True,
-    )
+    train_loader = dataloader_factory(train_dataset, batch_size=cfg.data.batch_size)
+    val_loader = dataloader_factory(val_dataset, batch_size=cfg.data.batch_size)
 
     train_ratio = len(train_dataset) / (len(val_dataset) + len(train_dataset))
     print(f"num train samples = {len(train_dataset)}")
@@ -89,15 +75,15 @@ def main():
     # rollout viz trajectory + initial checkpoint
     viz_path = dataset_dir("train", cfg.data.size).parent / cfg.data.viz_sample
     m_true, H_ext = load_trajectory(viz_path)
-    test_rollout(
-        model,
-        m_true=m_true,
-        H_ext=H_ext,
-        save_path=save_path / "checkpoints/trjs/trj_epoch_0.png",
-    )
-    eqx.tree_serialise_leaves(
-        save_path / "checkpoints/weights/weights_epoch_0.eqx", model
-    )
+    # test_rollout(
+    #     model,
+    #     m_true=m_true,
+    #     H_ext=H_ext,
+    #     save_path=save_path / "checkpoints/trjs/trj_epoch_0.png",
+    # )
+    # eqx.tree_serialise_leaves(
+    #     save_path / "checkpoints/weights/weights_epoch_0.eqx", model
+    # )
 
     optimizer = build_optimizer(cfg.optim)
     state = optimizer.init(eqx.filter(model, trainable_filter(model)))
@@ -108,13 +94,13 @@ def main():
         for i in bar:
             model, state, train_loss = train_epoch(
                 model=model,
-                loader=train_loader,
+                loader=train_loader(seed=i),
                 optimizer=optimizer,
                 state=state,
             )
             train_history.append(train_loss)
 
-            val_loss = val_epoch(model=model, loader=val_loader)
+            val_loss = val_epoch(model=model, loader=val_loader(i))
             val_history.append(val_loss)
             bar.set_description(f"loss={val_loss:.4e}")
 

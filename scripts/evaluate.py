@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 
 from llg_emulator.checkpoint import load_model
 from llg_emulator.config import RESULTS_DIR, SP4_PATH, dataset_dir
-from llg_emulator.data import JaxLoader, LLGDataset, load_trajectory
+from llg_emulator.data import load_trajectory, LLGStepperSource, dataloader_factory
 from llg_emulator.experiment import TrainConfig
 from llg_emulator.jax_setup import configure_jax
 from llg_emulator.metrics import correlation, nRMSE
@@ -20,14 +20,16 @@ configure_jax()
 RUN_DIR = RESULTS_DIR / "2026-05-26_12-18-10"
 
 
-def dataset_loss(model, split: str, size: str, warmup_steps: int) -> float:
+def dataset_loss(model, split: str, size: str, seed=0) -> float:
     """Mean one-step MSE over a data split."""
-    dataset = LLGDataset(dataset_dir(split, size), warmup_steps=warmup_steps)
-    loader = JaxLoader(dataset=dataset, batch_size=128, shuffle=False)
+    dataset = LLGStepperSource(dataset_dir(split, size))
+    loader = dataloader_factory(dataset, batch_size=128)
     total = 0.0
-    for batch in loader:
-        total += loss_fn(model, *batch).item()
-    return total / len(loader)
+    batch_ctr = 0
+    for batch in loader(seed=seed):
+        total += loss_fn(model, **batch).item()
+        batch_ctr += 1
+    return total / batch_ctr
 
 
 def rollout_stats(model, sample_path: Path):

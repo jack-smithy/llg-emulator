@@ -23,7 +23,6 @@ def load_model(
     cfg = model_config or ModelConfig()
     model = LLGEmulator(
         hidden_channels=cfg.hidden_channels,
-        num_modes=cfg.num_modes,
         num_blocks=cfg.num_blocks,
         activation=build_activation(cfg.activation),
         mesh_n=cfg.mesh_n,

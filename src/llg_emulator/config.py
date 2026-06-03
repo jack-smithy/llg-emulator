@@ -5,7 +5,7 @@ from pathlib import Path
 
 JAX_CACHE_DIR = ".jax_cache"
 
-DATA_ROOT = Path("../micromagnetic-data/data/dynamics/v2")
+DATA_ROOT = Path("data")
 SIZE = "small"  # or "med" for the bigger dataset
 SP4_PATH = DATA_ROOT / "sp4" / "sample_0"
 
