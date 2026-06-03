@@ -9,6 +9,87 @@ import numpy as np
 import torch
 from einops import rearrange, repeat
 from torch.utils.data import DataLoader, Dataset, default_collate
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from tqdm import tqdm
+import grain
+
+
+def load_metadata(path) -> dict:
+    with open(f"{path}/params.json") as f:
+        return json.load(f)
+
+
+def load_one_trajectory(path: Path) -> tuple[np.ndarray, np.ndarray]:
+    trj: np.ndarray = np.load(path / "m.npy", mmap_mode="r")
+
+    trj = trj.squeeze(-2)  # get rid of singleton z axis
+    trj = rearrange(trj, "t h w c -> t c h w")  # channel-first for equinox
+
+    num_time_steps = trj.shape[0]  # num time steps in trajectory
+
+    windows = []  # slice into m_{t}, m_{t+1} windows
+    for i in range(num_time_steps - 1):
+        windows.append(trj[i : i + 2])
+    windows = np.stack(windows)
+
+    params = load_metadata(path)
+    H_ext = (
+        np.asarray(params["H_ext"])
+        * np.ones((windows.shape[0], 3))
+        / params["material"]["Ms"]
+    )
+
+    return windows, H_ext
+
+
+def load_all_parallel(path: Path, max_workers: int | None = None):
+    dirs = sorted(p for p in path.iterdir() if p.is_dir())
+    results = [None] * len(dirs)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(load_one_trajectory, d): i for i, d in enumerate(dirs)
+        }
+        for fut in tqdm(as_completed(futures), total=len(dirs)):
+            results[futures[fut]] = fut.result()  # type: ignore
+
+    windows, fields = zip(*results)  # unpack results
+
+    windows = np.concatenate(windows, axis=0)  # type: ignore
+    fields = np.concatenate(fields, axis=0)  # type: ignore
+
+    return windows, fields
+
+
+class LLGSource(grain.sources.RandomAccessDataSource):
+    def __init__(self, path: Path, max_workers=16):
+        self.windows, self.fields = load_all_parallel(
+            path=path,
+            max_workers=max_workers,
+        )
+
+    def __getitem__(self, idx: int):
+        return {"window": self.windows[idx], "field": self.fields[idx]}
+
+    def __len__(self) -> int:
+        return self.windows.shape[0]
+
+
+def make_loader(source, batch_size, seed=0, workers=8):
+    sampler = grain.samplers.IndexSampler(
+        num_records=len(source),
+        shuffle=True,
+        seed=seed,
+        num_epochs=None,
+        shard_options=grain.sharding.NoSharding(),
+    )  # use ShardByJaxProcess() for multi-host
+    ops = [grain.transforms.Batch(batch_size, drop_remainder=True)]
+    return grain.DataLoader(
+        data_source=source,
+        sampler=sampler,
+        operations=ops,
+        worker_count=workers,
+        worker_buffer_size=2,
+    )  # prefetch on the CPU side
 
 
 def jax_collate(batch):
@@ -53,11 +134,6 @@ class JaxLoader(DataLoader):
             timeout=timeout,
             worker_init_fn=worker_init_fn,
         )
-
-
-def load_metadata(path) -> dict:
-    with open(f"{path}/params.json") as f:
-        return json.load(f)
 
 
 def _nondim_field(p: dict) -> np.ndarray:
@@ -126,6 +202,10 @@ def load_trajectory(path: Path):
 
 
 if __name__ == "__main__":
-    dataset = LLGDataset("../micromagnetic-data/data/dynamics/v2/small/train")
-    x, y = dataset[100]
-    print(x.shape, y.shape)
+    path = Path("../micromagnetic-data/data/dynamics/small/train")
+    source = LLGSource(path=path, max_workers=4)
+
+    loader = make_loader(source=source, batch_size=512)
+
+    for batch in loader:
+        print(batch["window"].shape)
