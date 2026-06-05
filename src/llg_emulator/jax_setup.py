@@ -1,4 +1,4 @@
-"""Call configure_jax() once, after CUDA_VISIBLE_DEVICES is set, before use."""
+"""Call configure_jax() once before JAX is used to persist the JIT cache."""
 
 import jax
 

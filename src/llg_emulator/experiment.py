@@ -23,7 +23,7 @@ class ModelConfig:
     num_blocks: int = 4
     activation: str = "gelu"  # gelu | relu | tanh
     # demag-field input (physics.DemagField): mesh geometry the demag tensor
-    # is precomputed for. Defaults match the v2 dataset (256x256x1 film).
+    # is precomputed for. Defaults match the dataset (256x256x1 film).
     mesh_n: tuple = (256, 256, 1)
     mesh_dx: tuple = (5e-9, 5e-9, 3e-9)
     demag_p: int = 20
@@ -32,9 +32,8 @@ class ModelConfig:
 @dataclass
 class DataConfig:
     size: str = "small"  # small | med
-    warmup_steps: int = 1
     batch_size: int = 128
-    viz_sample: str = "val/sample_292"  # rollout-viz trajectory
+    viz_sample: str = "sp4/sample_0"  # rollout-viz trajectory
 
 
 @dataclass

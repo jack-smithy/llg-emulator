@@ -31,33 +31,35 @@ def loss_fn(model: LLGEmulator, m0: Array, m1: Array, H: Array) -> Array:
     return jnp.mean(jnp.square(m1 - m1_pred))
 
 
-@eqx.filter_jit
-def update_fn(model, m0, m1, H, optimizer, state):
+@eqx.filter_jit(donate="all-except-first")
+def update_fn(batch, model, optimizer, opt_state):
+    m0, m1, H = batch["m0"], batch["m1"], batch["H"]
     diff, static = eqx.partition(model, trainable_filter(model))
 
     def diff_loss(diff):
         return loss_fn(eqx.combine(diff, static), m0, m1, H)
 
     loss, grad = eqx.filter_value_and_grad(diff_loss)(diff)
-    updates, state = optimizer.update(grad, state)
+    updates, opt_state = optimizer.update(grad, opt_state)
     diff = eqx.apply_updates(diff, updates)
-    return eqx.combine(diff, static), state, loss
+    return eqx.combine(diff, static), opt_state, loss
 
 
-def train_epoch(model, loader: grain.IterDataset, optimizer, state):
-    epoch_loss = 0.0
-    batch_ctr = 0
+def train_epoch(model, loader: grain.IterDataset, optimizer, opt_state):
+    epoch_loss = jnp.array(0.0)  # accumulate on-device; one sync at the end
+    n_batches = 0
     for batch in loader:
-        model, state, loss = update_fn(model, **batch, optimizer=optimizer, state=state)
-        epoch_loss += loss.item()
-        batch_ctr += 1  # hacky because loader doesnt have a __len__
-    return model, state, epoch_loss / batch_ctr
+        model, opt_state, loss = update_fn(batch, model, optimizer, opt_state)
+        epoch_loss += loss
+        n_batches += 1
+    return model, opt_state, (epoch_loss / n_batches).item()
 
 
 def val_epoch(model, loader: grain.IterDataset) -> float:
-    epoch_loss = 0.0
-    batch_ctr = 0
+    inference_model = eqx.nn.inference_mode(model)  # True is the default
+    epoch_loss = jnp.array(0.0)
+    n_batches = 0
     for batch in loader:
-        epoch_loss += loss_fn(model, **batch).item()
-        batch_ctr += 1  # hacky because loader doesnt have a __len__
-    return epoch_loss / batch_ctr
+        epoch_loss += loss_fn(inference_model, **batch)
+        n_batches += 1
+    return (epoch_loss / n_batches).item()

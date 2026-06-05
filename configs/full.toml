@@ -6,13 +6,11 @@ checkpoint_every = 8
 
 [model]
 hidden_channels = 32
-num_modes = 12
 num_blocks = 4
 activation = "gelu"
 
 [data]
 size = "med"
-warmup_steps = 1
 batch_size = 256
 viz_sample = "sp4/sample_0"
 

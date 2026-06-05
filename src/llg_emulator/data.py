@@ -1,85 +1,78 @@
 import json
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-
-import grain
 import jax.numpy as jnp
+import grain
 import numpy as np
 from einops import rearrange
-from jaxtyping import Array
 from tqdm import tqdm
 
+from jaxtyping import Array
 
-def load_metadata(path) -> dict:
-    with open(f"{path}/params.json") as f:
+
+def load_metadata(path: Path) -> dict:
+    """Metadata json for one trajectory"""
+    with open(path / "params.json") as f:
         return json.load(f)
 
 
-def load_windows(path: Path) -> tuple[np.ndarray, np.ndarray]:
-    trj: np.ndarray = np.load(path / "m.npy", mmap_mode="r")
-
-    trj = trj.squeeze(-2)  # get rid of singleton z axis
-    trj = rearrange(trj, "t h w c -> t c h w")  # channel-first for equinox
-
-    num_time_steps = trj.shape[0]  # num time steps in trajectory
-
-    windows = []  # slice into m_{t}, m_{t+1} windows
-    for i in range(num_time_steps - 1):
-        windows.append(trj[i : i + 2])
-    windows = np.stack(windows)
-
-    params = load_metadata(path)
-    H_ext = (
-        np.asarray(params["H_ext"])
-        * np.ones((windows.shape[0], 3))
-        / params["material"]["Ms"]
-    )
-
-    return windows, H_ext
-
-
 def load_trajectory(path: Path) -> tuple[Array, Array]:
-    trj = jnp.load(path / "m.npy", mmap_mode="r")
-    trj = trj.squeeze(-2)
-    trj = rearrange(trj, "t h w c -> t c h w")
+    """One trajectory as contiguous float32 (t, c, h, w) + its constant field (3,)."""
+    trj = np.load(path / "m.npy")  # mmap buys nothing; it's read in full
+    trj = rearrange(trj.squeeze(-2), "t h w c -> t c h w")
+    trj = np.ascontiguousarray(trj, dtype=np.float32)
 
     params = load_metadata(path)
-    H_ext = jnp.asarray(params["H_ext"]) / params["material"]["Ms"]
-    return trj, H_ext
+    Ms = np.float32(params["material"]["Ms"])
+    H = np.asarray(params["H_ext"], dtype=np.float32) / Ms
+    return jnp.asarray(trj), jnp.asarray(H)
 
 
-def load_windows_parallel(path: Path, max_workers: int | None = None):
+def load_trajectories(path: Path, max_workers: int = 16):
+    """Read all trajectories in parallel from disk"""
     dirs = sorted(p for p in path.iterdir() if p.is_dir())
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(load_windows, d) for d in dirs]
-        results = [f.result() for f in tqdm(as_completed(futures), total=len(dirs))]
-
-    windows, fields = zip(*results)
-    return np.concatenate(windows), np.concatenate(fields)
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        results = list(tqdm(ex.map(load_trajectory, dirs), total=len(dirs)))
+    trajs, fields = zip(*results)
+    return list(trajs), list(fields)
 
 
 class LLGStepperSource(grain.sources.RandomAccessDataSource):
-    def __init__(self, path: Path, max_workers=16):
-        self.windows, self.fields = load_windows_parallel(
-            path=path,
-            max_workers=max_workers,
+    """Serves (m_t, m_{t+1}, H) pairs without materializing the windows."""
+
+    def __init__(self, path: Path, max_workers: int = 16):
+        self.trajs, self.fields = load_trajectories(path, max_workers)
+        # flat index: one (traj, t) entry per consecutive pair, across all trajectories
+        self.index = np.array(
+            [
+                (ti, t)
+                for ti, trj in enumerate(self.trajs)
+                for t in range(trj.shape[0] - 1)
+            ],
+            dtype=np.int64,
         )
 
-    def __getitem__(self, idx: int):
-        m0 = self.windows[idx][0]
-        m1 = self.windows[idx][1]
-        return {"m0": m0, "m1": m1, "H": self.fields[idx]}
+    def __getitem__(self, idx: int) -> dict:
+        ti, t = self.index[idx]
+        trj = self.trajs[ti]
+        return {"m0": trj[t], "m1": trj[t + 1], "H": self.fields[ti]}
 
     def __len__(self) -> int:
-        return self.windows.shape[0]
+        return len(self.index)
 
 
-def dataloader_factory(source, batch_size):
+def dataloader_factory(source, batch_size, num_threads: int = 4, prefetch: int = 4):
+    """Factory method for dataloaders for each batch"""
+
     def closure(seed: int) -> grain.IterDataset:
         return (
-            grain.MapDataset.source(source=source)
+            grain.MapDataset.source(source)
             .shuffle(seed=seed)
-            .to_iter_dataset()
+            .to_iter_dataset(
+                grain.ReadOptions(
+                    num_threads=num_threads, prefetch_buffer_size=prefetch
+                )
+            )
             .batch(batch_size=batch_size, drop_remainder=True)
         )
 

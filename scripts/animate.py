@@ -20,7 +20,7 @@ from llg_emulator.rollout import rollout_trajectory
 configure_jax()
 
 # point this at the run dir to animate
-RUN_DIR = RESULTS_DIR / "2026-05-26_12-18-10"
+RUN_DIR = RESULTS_DIR / "baseline"
 
 
 def main():

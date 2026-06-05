@@ -20,10 +20,17 @@ class FiLM(eqx.Module):
     l1: eqx.nn.Linear
     l2: eqx.nn.Linear
 
-    def __init__(self, in_dim: int, hidden: int, out_dim: int, *, key):
+    def __init__(
+        self,
+        in_features: int,
+        hidden_channels: int,
+        out_features: int,
+        *,
+        key,
+    ):
         k1, k2 = jr.split(key)
-        self.l1 = eqx.nn.Linear(in_dim, hidden, key=k1)
-        l2 = eqx.nn.Linear(hidden, out_dim, key=k2)
+        self.l1 = eqx.nn.Linear(in_features, hidden_channels, key=k1)
+        l2 = eqx.nn.Linear(hidden_channels, out_features, key=k2)
 
         assert l2.bias is not None
 
@@ -67,34 +74,43 @@ class LLGEmulator(eqx.Module):
         )
         self.n_pts = num_blocks + 1  # post-lifting + one per block
         self.film = FiLM(
-            3,
-            hidden_channels,
-            self.n_pts * 2 * hidden_channels,
+            in_features=3,
+            hidden_channels=hidden_channels,
+            out_features=self.n_pts * 2 * hidden_channels,
             key=film_key,
         )
         # Ms cancels under the nondim (h_demag / Ms) output, so any positive
         # value gives the nondimensionalised demag field the model consumes.
         self.demag = DemagField(mesh_n, mesh_dx, Ms=1.0, p=demag_p)
 
-    def __call__(self, m0: Array, H: Array) -> Array:
-        m = m0[:3]  # m_t
+    def step(self, m0, dm):
+        # tangent-space residual: the true change is perpendicular to m
+        m_hat = m0 / (jnp.linalg.norm(m0, axis=0, keepdims=True) + 1e-8)
+        dm = dm - jnp.sum(dm * m_hat, axis=0, keepdims=True) * m_hat
+        m1 = m0 + dm
+        return m1 / (jnp.linalg.norm(m1, axis=0, keepdims=True) + 1e-8)
 
+    def init_film(self, H):
         g = self.film(H).reshape(self.n_pts, 2, -1)
-        # gamma = 1 + raw so zero-init -> identity modulation
         g = g.at[:, 0, :].add(1.0)
 
         def modulate(h, i):
             return g[i, 0][:, None, None] * h + g[i, 1][:, None, None]
 
-        model_in = jnp.concatenate([m, self.demag(m)], axis=0)  # (6, A, B)
+        return modulate
+
+    def forward(self, m0, H):
+        modulate = self.init_film(H)
+
+        model_in = jnp.concatenate([m0, self.demag(m0)], axis=0)  # (6, nx, ny)
         h = modulate(self.backbone.lifting(model_in), 0)  # type: ignore
         for i, block in enumerate(self.backbone.blocks, start=1):
             h = modulate(block(h), i)  # type: ignore
         dm = self.backbone.projection(h)  # type: ignore
 
-        # tangent-space residual: the true change is perpendicular to m
-        m_hat = m / (jnp.linalg.norm(m, axis=0, keepdims=True) + 1e-8)
-        dm = dm - jnp.sum(dm * m_hat, axis=0, keepdims=True) * m_hat
+        return dm
 
-        out = m + dm
-        return out / (jnp.linalg.norm(out, axis=0, keepdims=True) + 1e-8)
+    def __call__(self, m0: Array, H: Array) -> Array:
+        dm = self.forward(m0=m0, H=H)
+        m1 = self.step(m0=m0, dm=dm)
+        return m1

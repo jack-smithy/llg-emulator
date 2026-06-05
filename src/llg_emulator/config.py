@@ -1,11 +1,8 @@
-"""Project constants. Imports only os/pathlib (no jax) so this module can be
-imported before CUDA_VISIBLE_DEVICES is set."""
-
 from pathlib import Path
 
 JAX_CACHE_DIR = ".jax_cache"
 
-DATA_ROOT = Path("data")
+DATA_ROOT = Path("../micromagnetic-data/data/dynamics")
 SIZE = "small"  # or "med" for the bigger dataset
 SP4_PATH = DATA_ROOT / "sp4" / "sample_0"
 

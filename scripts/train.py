@@ -75,28 +75,28 @@ def main():
     # rollout viz trajectory + initial checkpoint
     viz_path = dataset_dir("train", cfg.data.size).parent / cfg.data.viz_sample
     m_true, H_ext = load_trajectory(viz_path)
-    # test_rollout(
-    #     model,
-    #     m_true=m_true,
-    #     H_ext=H_ext,
-    #     save_path=save_path / "checkpoints/trjs/trj_epoch_0.png",
-    # )
-    # eqx.tree_serialise_leaves(
-    #     save_path / "checkpoints/weights/weights_epoch_0.eqx", model
-    # )
+    test_rollout(
+        model,
+        m_true=m_true,
+        H_ext=H_ext,
+        save_path=save_path / "checkpoints/trjs/trj_epoch_0.png",
+    )
+    eqx.tree_serialise_leaves(
+        save_path / "checkpoints/weights/weights_epoch_0.eqx", model
+    )
 
     optimizer = build_optimizer(cfg.optim)
-    state = optimizer.init(eqx.filter(model, trainable_filter(model)))
+    opt_state = optimizer.init(eqx.filter(model, trainable_filter(model)))
 
     train_history = []
     val_history = []
     with tqdm(range(cfg.epochs)) as bar:
         for i in bar:
-            model, state, train_loss = train_epoch(
+            model, opt_state, train_loss = train_epoch(
                 model=model,
                 loader=train_loader(seed=i),
                 optimizer=optimizer,
-                state=state,
+                opt_state=opt_state,
             )
             train_history.append(train_loss)
 

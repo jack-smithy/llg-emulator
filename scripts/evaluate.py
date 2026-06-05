@@ -17,7 +17,7 @@ from llg_emulator.training import loss_fn
 
 configure_jax()
 # point this at the run dir to evaluate
-RUN_DIR = RESULTS_DIR / "2026-05-26_12-18-10"
+RUN_DIR = RESULTS_DIR / "baseline"
 
 
 def dataset_loss(model, split: str, size: str, seed=0) -> float:
@@ -49,8 +49,8 @@ def main():
     )
     print("model loaded")
 
-    train_loss = dataset_loss(model, "train", cfg.data.size, cfg.data.warmup_steps)
-    val_loss = dataset_loss(model, "val", cfg.data.size, cfg.data.warmup_steps)
+    train_loss = dataset_loss(model, "train", cfg.data.size)
+    val_loss = dataset_loss(model, "val", cfg.data.size)
     print("calculated dataset loss")
 
     nrmse_curve, corr = rollout_stats(model, SP4_PATH)

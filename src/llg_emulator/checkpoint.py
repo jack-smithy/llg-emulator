@@ -18,7 +18,7 @@ def load_model(
 
     Pass the run's ModelConfig (from TrainConfig.from_run_dir) so checkpoints
     trained with a non-default architecture reload correctly. Defaults to
-    ModelConfig() (the historical default architecture).
+    ModelConfig()
     """
     cfg = model_config or ModelConfig()
     model = LLGEmulator(
