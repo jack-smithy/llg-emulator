@@ -14,10 +14,33 @@ from llg_emulator.jax_setup import configure_jax
 from llg_emulator.metrics import correlation, nRMSE
 from llg_emulator.rollout import rollout_trajectory
 from llg_emulator.training import loss_fn
+from llg_emulator.plotting import plot_m_means, plot_rollout_metric
 
 configure_jax()
 # point this at the run dir to evaluate
-RUN_DIR = RESULTS_DIR / "baseline"
+RUN_DIR = RESULTS_DIR / "2026-06-05_10-08-17"
+
+
+def rollout_stats(model, sample_path: Path):
+    """Roll out a trajectory; return per-step nRMSE/corr curves, overall
+    correlation, and the trajectory's normalized dt (for labelling)."""
+    m_true, H_ext = load_trajectory(sample_path)
+    m_pred = rollout_trajectory(model, m_true, H_ext, include_init=True)
+    nrmse_curve = jax.vmap(nRMSE)(m_pred, m_true)
+    corr_curve = jax.vmap(correlation)(m_pred, m_true)
+    return nrmse_curve, corr_curve, correlation(m_pred, m_true)
+
+
+def plot_trajectory_means(model, sample_path: Path, save_path: Path) -> None:
+    """Roll out a trajectory and plot true vs. predicted <m_x,y,z> spatial
+    means over time (the same view produced during training)."""
+    m_true, H_ext = load_trajectory(sample_path)
+    m_pred = rollout_trajectory(model, m_true, H_ext, include_init=True)
+    plot_m_means(
+        m_avg=jnp.mean(m_true, axis=(2, 3)),
+        m_avg_pred=jnp.mean(m_pred, axis=(2, 3)),
+        save_path=save_path,
+    )
 
 
 def dataset_loss(model, split: str, size: str, seed=0) -> float:
@@ -32,20 +55,12 @@ def dataset_loss(model, split: str, size: str, seed=0) -> float:
     return total / batch_ctr
 
 
-def rollout_stats(model, sample_path: Path):
-    """Roll out the sp4 trajectory; return per-step nRMSE curve + correlation."""
-    m_true, H_ext = load_trajectory(sample_path)
-    m_pred = rollout_trajectory(model, m_true, H_ext, include_init=True)
-    nrmse_curve = jax.vmap(nRMSE)(m_pred, m_true)
-    return nrmse_curve, correlation(m_pred, m_true)
-
-
 def main():
     print("starting evaluation")
     cfg = TrainConfig.from_run_dir(RUN_DIR)
     key = jr.PRNGKey(cfg.seed)
     model = load_model(
-        key=key, weights_path=RUN_DIR / "weights.eqx", model_config=cfg.model
+        key=key, weights_path=RUN_DIR / "weights.eqx", model_config=cfg.model,
     )
     print("model loaded")
 
@@ -53,7 +68,7 @@ def main():
     val_loss = dataset_loss(model, "val", cfg.data.size)
     print("calculated dataset loss")
 
-    nrmse_curve, corr = rollout_stats(model, SP4_PATH)
+    nrmse_curve, corr_curve, corr = rollout_stats(model, SP4_PATH)
     print("rollout trajectory done\n\n")
 
     stats = {
@@ -71,16 +86,9 @@ def main():
         json.dump(stats, f, indent=2)
     print(f"saved {metrics_path}")
 
-    plt.figure()
-    plt.plot(jnp.arange(nrmse_curve.shape[0]), nrmse_curve)
-    plt.xlabel("rollout step")
-    plt.ylabel("nRMSE")
-    plt.title("sp4 rollout error vs. step")
-    plt.grid(True, alpha=0.3)
-    plot_path = RUN_DIR / "rollout_nrmse.png"
-    plt.savefig(plot_path)
-    plt.close()
-    print(f"saved {plot_path}")
+    plot_rollout_metric(nrmse_curve, "nRMSE", RUN_DIR)
+    plot_rollout_metric(corr_curve, "Correlation", RUN_DIR)
+    plot_trajectory_means(model, SP4_PATH, RUN_DIR)
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ JAX_CACHE_DIR = ".jax_cache"
 
 DATA_ROOT = Path("../micromagnetic-data/data/dynamics")
 SIZE = "small"  # or "med" for the bigger dataset
-SP4_PATH = DATA_ROOT / "sp4" / "sample_0"
+SP4_PATH = DATA_ROOT / SIZE / "sp4" / "sample_0"
 
 RESULTS_DIR = Path("results")
 

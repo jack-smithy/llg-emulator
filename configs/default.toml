@@ -1,8 +1,8 @@
 # Default training config (128 epochs). Copy this file per experiment.
 
 seed = 0
-epochs = 128
-checkpoint_every = 16
+epochs = 32
+checkpoint_every = 8
 
 [model]
 hidden_channels = 64
@@ -10,8 +10,8 @@ num_blocks = 4
 activation = "gelu"
 
 [data]
-size = "small"          # small | med
-batch_size = 50
+size = "med"          # small | med
+batch_size = 64
 viz_sample = "sp4/sample_0"
 
 [optim]

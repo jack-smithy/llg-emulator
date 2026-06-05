@@ -1,4 +1,5 @@
 import matplotlib.pyplot as plt
+import numpy as np
 
 
 def plot_m_means(m_avg, m_avg_pred, save_path) -> None:
@@ -25,3 +26,16 @@ def plot_learning_curve(train_history, val_history, save_path) -> None:
     plt.legend()
     plt.savefig(save_path)
     plt.close()
+
+
+def plot_rollout_metric(metric, name, save_path) -> None:
+    plt.figure()
+    plt.plot(np.arange(metric.shape[0]), metric)
+    plt.xlabel("rollout step")
+    plt.ylabel(name)
+    plt.title(f"SP4 {name} vs. step")
+    plt.grid(True, alpha=0.3)
+    plot_path = save_path / f"rollout_{name.lower()}.png"
+    plt.savefig(plot_path)
+    plt.close()
+    print(f"saved {plot_path}")
