@@ -15,10 +15,11 @@ from llg_emulator.metrics import correlation, nRMSE
 from llg_emulator.rollout import rollout_trajectory
 from llg_emulator.training import loss_fn
 from llg_emulator.plotting import plot_m_means, plot_rollout_metric
+from tqdm import tqdm
 
 configure_jax()
 # point this at the run dir to evaluate
-RUN_DIR = RESULTS_DIR / "2026-06-05_10-08-17"
+RUN_DIR = RESULTS_DIR / "2026-06-05_13-33-41"
 
 
 def rollout_stats(model, sample_path: Path):
@@ -39,8 +40,55 @@ def plot_trajectory_means(model, sample_path: Path, save_path: Path) -> None:
     plot_m_means(
         m_avg=jnp.mean(m_true, axis=(2, 3)),
         m_avg_pred=jnp.mean(m_pred, axis=(2, 3)),
-        save_path=save_path,
+        save_path=save_path / "traj.png",
     )
+
+
+def correlations_trajectory(model, path: Path, save_path):
+    paths_list = list(path.iterdir())
+
+    traj_corrs = []
+    traj_rmses = []
+    for p in tqdm(paths_list):
+        m_true, H_ext = load_trajectory(p)
+        m_pred = rollout_trajectory(model, m_true, H_ext)
+        traj_corrs.append(jax.vmap(correlation)(m_pred, m_true))
+        traj_rmses.append(jax.vmap(nRMSE)(m_pred, m_true))
+
+    traj_corrs = jnp.stack(traj_corrs, axis=0)
+    traj_rmses = jnp.stack(traj_rmses, axis=0)
+
+    corrs_mean = jnp.mean(traj_corrs, axis=0)
+    rmses_mean = jnp.mean(traj_rmses, axis=0)
+
+    corrs_std = jnp.std(traj_corrs, axis=0)
+    rmses_std = jnp.std(traj_rmses, axis=0)
+
+    steps = corrs_mean.shape[0]
+
+    fig, axs = plt.subplots(nrows=1, ncols=2, figsize=(8, 4))
+    axs[0].plot(range(steps), corrs_mean)
+    axs[0].fill_between(
+        range(steps),
+        corrs_mean - corrs_std,
+        corrs_mean + corrs_std,
+        alpha=0.3,
+    )
+    axs[0].set_ylim((0, 1))
+    axs[0].set(title="Correlation", xlabel="step", ylabel="correlation")
+
+    axs[1].plot(range(steps), rmses_mean)
+    axs[1].fill_between(
+        range(steps),
+        rmses_mean - rmses_std,
+        rmses_mean + rmses_std,
+        alpha=0.3,
+    )
+    axs[1].set_ylim((0, 1))
+    axs[1].set(title="nRMSE", xlabel="step", ylabel="nRMSE")
+
+    fig.savefig(save_path / "rollouts.png")
+    plt.close(fig)
 
 
 def dataset_loss(model, split: str, size: str, seed=0) -> float:
@@ -60,9 +108,13 @@ def main():
     cfg = TrainConfig.from_run_dir(RUN_DIR)
     key = jr.PRNGKey(cfg.seed)
     model = load_model(
-        key=key, weights_path=RUN_DIR / "weights.eqx", model_config=cfg.model,
+        key=key,
+        weights_path=RUN_DIR / "weights.eqx",
+        model_config=cfg.model,
     )
     print("model loaded")
+
+    correlations_trajectory(model, dataset_dir("val", "med"), RUN_DIR)
 
     train_loss = dataset_loss(model, "train", cfg.data.size)
     val_loss = dataset_loss(model, "val", cfg.data.size)
