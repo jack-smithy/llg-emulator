@@ -51,8 +51,16 @@ def main():
     train_dataset = LLGStepperSource(dataset_dir("train", cfg.data.size))
     val_dataset = LLGStepperSource(dataset_dir("val", cfg.data.size))
 
-    train_loader = dataloader_factory(train_dataset, batch_size=cfg.data.batch_size)
-    val_loader = dataloader_factory(val_dataset, batch_size=cfg.data.batch_size)
+    train_loader = dataloader_factory(
+        train_dataset,
+        batch_size=cfg.data.batch_size,
+        prefetch=2 * cfg.data.batch_size,
+    )
+    val_loader = dataloader_factory(
+        val_dataset,
+        batch_size=cfg.data.batch_size,
+        prefetch=2 * cfg.data.batch_size,
+    )
 
     train_ratio = len(train_dataset) / (len(val_dataset) + len(train_dataset))
     print(f"num train samples = {len(train_dataset)}")

@@ -1,6 +1,6 @@
 seed = 0
-epochs = 8
-checkpoint_every = 4
+epochs = 128
+checkpoint_every = 8
 
 [model]
 hidden_channels = 64
