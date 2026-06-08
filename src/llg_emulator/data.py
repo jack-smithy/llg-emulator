@@ -3,10 +3,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import grain
-import jax.numpy as jnp
 import numpy as np
 from einops import rearrange
-from jaxtyping import Array
 from tqdm import tqdm
 
 
