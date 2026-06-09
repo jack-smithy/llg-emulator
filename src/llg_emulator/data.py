@@ -43,7 +43,7 @@ class LLGStepperSource(grain.sources.RandomAccessDataSource):
             [
                 (ti, t)
                 for ti, trj in enumerate(self.trajs)
-                for t in range(trj.shape[0] - 2)
+                for t in range(trj.shape[0] - 1)
             ],
             dtype=np.int64,
         )
@@ -51,7 +51,7 @@ class LLGStepperSource(grain.sources.RandomAccessDataSource):
     def __getitem__(self, idx: int) -> dict:
         ti, t = self.index[idx]
         trj = self.trajs[ti]
-        return {"m0": trj[t], "m1": trj[t + 1], "m2": trj[t + 2], "H": self.fields[ti]}
+        return {"m0": trj[t], "m1": trj[t + 1], "H": self.fields[ti]}
 
     def __len__(self) -> int:
         return len(self.index)

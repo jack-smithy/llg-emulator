@@ -43,6 +43,14 @@ class OptimConfig:
 
 
 @dataclass
+class WandbConfig:
+    project: str = "llg-emulator"
+    entity: str | None = None
+    mode: str = "offline"  # offline | online | disabled
+    name: str | None = None  # run name; defaults to the run dir timestamp
+
+
+@dataclass
 class TrainConfig:
     seed: int = 0
     epochs: int = 10
@@ -50,6 +58,7 @@ class TrainConfig:
     model: ModelConfig = field(default_factory=ModelConfig)
     data: DataConfig = field(default_factory=DataConfig)
     optim: OptimConfig = field(default_factory=OptimConfig)
+    wandb: WandbConfig = field(default_factory=WandbConfig)
 
     @classmethod
     def from_dict(cls, d: dict) -> "TrainConfig":
@@ -57,8 +66,9 @@ class TrainConfig:
         model = _build_section(ModelConfig, d.pop("model", {}), "model")
         data = _build_section(DataConfig, d.pop("data", {}), "data")
         optim = _build_section(OptimConfig, d.pop("optim", {}), "optim")
+        wandb = _build_section(WandbConfig, d.pop("wandb", {}), "wandb")
         _check_keys(cls, d, "top-level")
-        return cls(model=model, data=data, optim=optim, **d)
+        return cls(model=model, data=data, optim=optim, wandb=wandb, **d)
 
     @classmethod
     def from_toml(cls, path) -> "TrainConfig":

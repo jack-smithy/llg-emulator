@@ -17,7 +17,7 @@ import logging as _logging
 
 import equinox as eqx
 import jax.numpy as jnp
-from jaxtyping import Array, Float
+from jaxtyping import Array
 
 import neuralmag as nm
 from neuralmag.backends.jax.demag_field import h_cell

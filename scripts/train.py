@@ -1,9 +1,11 @@
 import argparse
+from dataclasses import asdict
 from pathlib import Path
 
 import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jr
+import wandb
 from tqdm import tqdm
 
 from llg_emulator.checkpoint import make_run_dir
@@ -45,8 +47,17 @@ def main():
     cfg = TrainConfig.from_toml(args.config)
     save_path = make_run_dir()
     cfg.save(save_path, args.config)
-    print(f"run dir = {save_path}")
-    print(f"config  = {args.config}")
+
+    wandb.init(
+        project=cfg.wandb.project,
+        entity=cfg.wandb.entity,
+        mode=cfg.wandb.mode,
+        name=cfg.wandb.name or save_path.name,
+        dir=str(save_path),
+        config=asdict(cfg),
+    )
+    wandb.summary["run_dir"] = str(save_path)
+    wandb.summary["config_path"] = args.config
 
     train_dataset = LLGStepperSource(dataset_dir("train", cfg.data.size))
     val_dataset = LLGStepperSource(dataset_dir("val", cfg.data.size))
@@ -63,9 +74,9 @@ def main():
     )
 
     train_ratio = len(train_dataset) / (len(val_dataset) + len(train_dataset))
-    print(f"num train samples = {len(train_dataset)}")
-    print(f"num val samples = {len(val_dataset)}")
-    print(f"train ratio = {train_ratio * 100:.2f}%")
+    wandb.summary["num_train_samples"] = len(train_dataset)
+    wandb.summary["num_val_samples"] = len(val_dataset)
+    wandb.summary["train_ratio"] = train_ratio
 
     key = jr.PRNGKey(cfg.seed)
     key, subkey = jr.split(key)
@@ -78,17 +89,14 @@ def main():
         demag_p=cfg.model.demag_p,
         key=subkey,
     )
-    print(f"num parameters = {count_parameters(model)}")
+    wandb.summary["num_parameters"] = count_parameters(model)
 
     # rollout viz trajectory + initial checkpoint
     viz_path = dataset_dir("train", cfg.data.size).parent / cfg.data.viz_sample
     m_true, H_ext = load_trajectory(viz_path)
-    test_rollout(
-        model,
-        m_true=m_true,
-        H_ext=H_ext,
-        save_path=save_path / "checkpoints/trjs/trj_epoch_0.png",
-    )
+    trj0_path = save_path / "checkpoints/trjs/trj_epoch_0.png"
+    test_rollout(model, m_true=m_true, H_ext=H_ext, save_path=trj0_path)
+    wandb.log({"rollout/trj": wandb.Image(str(trj0_path))}, step=0)
     eqx.tree_serialise_leaves(
         save_path / "checkpoints/weights/weights_epoch_0.eqx", model
     )
@@ -111,25 +119,26 @@ def main():
             val_loss = val_epoch(model=model, loader=val_loader(i))
             val_history.append(val_loss)
             bar.set_description(f"loss={val_loss:.4e}")
+            wandb.log({"train_loss": train_loss, "val_loss": val_loss}, step=i)
 
             if (i + 1) % cfg.checkpoint_every == 0:
-                test_rollout(
-                    model,
-                    m_true=m_true,
-                    H_ext=H_ext,
-                    save_path=save_path / f"checkpoints/trjs/trj_epoch_{i + 1}.png",
-                )
+                trj_path = save_path / f"checkpoints/trjs/trj_epoch_{i + 1}.png"
+                test_rollout(model, m_true=m_true, H_ext=H_ext, save_path=trj_path)
+                wandb.log({"rollout/trj": wandb.Image(str(trj_path))}, step=i)
                 eqx.tree_serialise_leaves(
                     save_path / f"checkpoints/weights/weights_epoch_{i + 1}.eqx",
                     model,
                 )
 
     eqx.tree_serialise_leaves(save_path / "weights.eqx", model)
+    curve_path = save_path / "learning_curve.png"
     plot_learning_curve(
         train_history=train_history,
         val_history=val_history,
-        save_path=save_path / "learning_curve.png",
+        save_path=curve_path,
     )
+    wandb.log({"learning_curve": wandb.Image(str(curve_path))})
+    wandb.finish()
 
 
 if __name__ == "__main__":

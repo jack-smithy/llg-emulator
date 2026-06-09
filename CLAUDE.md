@@ -88,11 +88,13 @@ per sample (`sample_*`), each containing:
   (partitions out the frozen demag tensor before the grad step; jitted with
   donation), `train_epoch`, `val_epoch`.
 - `experiment.py` — `TrainConfig` (`seed`, `epochs`, `checkpoint_every` +
-  nested `model`/`data`/`optim`) with typed dataclasses: `ModelConfig`
+  nested `model`/`data`/`optim`/`wandb`) with typed dataclasses: `ModelConfig`
   (`hidden_channels`, `num_blocks`, `activation`, plus the demag mesh geometry
   `mesh_n`/`mesh_dx`/`demag_p`, defaulting to the 256×256×1 film so the demag
   tensor reconstructs exactly on reload), `DataConfig` (`size`, `batch_size`,
-  `viz_sample`), `OptimConfig` (`name`, `lr`). `from_toml`/`from_dict` (stdlib
+  `viz_sample`), `OptimConfig` (`name`, `lr`), `WandbConfig` (`project`,
+  `entity`, `mode` [offline|online|disabled, default offline], optional run
+  `name`). `from_toml`/`from_dict` (stdlib
   `tomllib`; unknown keys raise), `save` (copies source `.toml` as
   `config.toml` + writes `resolved_config.json`), `from_run_dir`, and
   `build_activation`/`build_optimizer` str→callable maps.
@@ -112,7 +114,12 @@ per sample (`sample_*`), each containing:
   epoch-0 checkpoint then every-`checkpoint_every` weights
   (`checkpoints/weights/weights_epoch_N.eqx`) and rollout plots
   (`checkpoints/trjs/trj_epoch_N.png`); final `weights.eqx` +
-  `learning_curve.png`.
+  `learning_curve.png`. All metrics/plots/config are also logged to Weights &
+  Biases via `wandb.init`/`wandb.log` (per-epoch `train_loss`/`val_loss`,
+  rollout images, learning curve; param count + dataset sizes in the run
+  summary; full `asdict(cfg)` as the wandb config). Defaults to `offline` mode
+  (SLURM-friendly) with offline run files written under the run dir — sync
+  afterward with `wandb sync <run_dir>/wandb/offline-run-*`.
 - `evaluate.py` — reads `RUN_DIR`'s `resolved_config.json` to rebuild the exact
   model/data, computes train/val one-step MSE + sp4 rollout nRMSE/correlation →
   `RUN_DIR/metrics.json` + `rollout_nrmse.png`.

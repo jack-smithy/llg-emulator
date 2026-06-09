@@ -1,5 +1,5 @@
 seed = 0
-epochs = 128
+epochs = 32
 checkpoint_every = 8
 
 [model]
@@ -15,3 +15,9 @@ viz_sample = "sp4/sample_0"
 [optim]
 name = "adam"
 lr = 1e-4
+
+[wandb]
+project = "llg-emulator"
+mode = "online"      # offline | online | disabled
+# entity = "jack-smithy-university-of-vienna"
+# name = "test"
