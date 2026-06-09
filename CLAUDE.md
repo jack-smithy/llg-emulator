@@ -93,45 +93,54 @@ per sample (`sample_*`), each containing:
   `mesh_n`/`mesh_dx`/`demag_p`, defaulting to the 256×256×1 film so the demag
   tensor reconstructs exactly on reload), `DataConfig` (`size`, `batch_size`,
   `viz_sample`), `OptimConfig` (`name`, `lr`), `WandbConfig` (`project`,
-  `entity`, `mode` [offline|online|disabled, default offline], optional run
-  `name`). `from_toml`/`from_dict` (stdlib
-  `tomllib`; unknown keys raise), `save` (copies source `.toml` as
-  `config.toml` + writes `resolved_config.json`), `from_run_dir`, and
-  `build_activation`/`build_optimizer` str→callable maps.
+  `entity`, `mode` [online|offline|disabled, default online], optional run
+  `name` — `None` ⇒ wandb's auto-generated name). `from_toml`/`from_dict`
+  (stdlib `tomllib`; unknown keys raise; `from_dict(run.config)` reconstructs a
+  config from a wandb run), and `build_activation`/`build_optimizer`
+  str→callable maps. Config is no longer written to disk — it lives in the
+  wandb run config (`asdict(cfg)`).
 - `checkpoint.py` — `load_model(key, weights_path, model_config)` (rebuilds the
-  exact architecture from a `ModelConfig`, defaulting to `ModelConfig()`), and
-  `make_run_dir` (fresh timestamped run dir with `checkpoints/weights/` and
-  `checkpoints/trjs/` subdirs).
-- `plotting.py` — `plot_m_means`, `plot_learning_curve`.
+  exact architecture from a `ModelConfig`, defaulting to `ModelConfig()`).
+- `wandb_io.py` — cloud lookup/download shared by evaluate/animate:
+  `model_artifact_name(run_id)` (`model-<id>`), `find_run(name, project,
+  entity)` (resolves a run by display name via `wandb.Api`, errors if absent or
+  ambiguous), and `download_model_dir(run)` (fetches the run's `:latest` model
+  artifact to a local cache dir).
+- `plotting.py` — `plot_m_means`, `plot_learning_curve`, `plot_rollout_metric`.
 
 `scripts/` — entrypoints (`uv run scripts/<x>.py`), each calls
 `configure_jax()` at import:
 
+Logging is **wandb-native**: training writes nothing to `results/`. Weights,
+plots, metrics, and config all live in the wandb run; runs use wandb's
+auto-generated display name (no datetime dirs). `evaluate.py`/`animate.py`
+take that display name and pull weights/config back from the cloud.
+
 - `train.py` — `uv run scripts/train.py --config configs/<name>.toml`
-  (default `configs/default.toml`). The TOML fully specifies the run; it is
-  copied into the run dir as `config.toml` plus a fully-resolved
-  `resolved_config.json`. Trains into a fresh `results/<timestamp>/`; writes an
-  epoch-0 checkpoint then every-`checkpoint_every` weights
-  (`checkpoints/weights/weights_epoch_N.eqx`) and rollout plots
-  (`checkpoints/trjs/trj_epoch_N.png`); final `weights.eqx` +
-  `learning_curve.png`. All metrics/plots/config are also logged to Weights &
-  Biases via `wandb.init`/`wandb.log` (per-epoch `train_loss`/`val_loss`,
-  rollout images, learning curve; param count + dataset sizes in the run
-  summary; full `asdict(cfg)` as the wandb config). Defaults to `offline` mode
-  (SLURM-friendly) with offline run files written under the run dir — sync
-  afterward with `wandb sync <run_dir>/wandb/offline-run-*`.
-- `evaluate.py` — reads `RUN_DIR`'s `resolved_config.json` to rebuild the exact
-  model/data, computes train/val one-step MSE + sp4 rollout nRMSE/correlation →
-  `RUN_DIR/metrics.json` + `rollout_nrmse.png`.
-- `animate.py` — animates sp4 rollout ⟨m⟩ across `RUN_DIR` checkpoints vs. a
-  static ground truth → `RUN_DIR/training.gif`.
+  (default `configs/default.toml`). The TOML fully specifies the run. Stages
+  weights/plots in a `tempfile` dir, logs to Weights & Biases via
+  `wandb.init`/`wandb.log` (per-epoch `train_loss`/`val_loss`, epoch-0 and
+  every-`checkpoint_every` rollout images + `weights_epoch_N.eqx`, final
+  `weights.eqx` + learning curve; param count + dataset sizes in the run
+  summary; full `asdict(cfg)` as the wandb config). All `.eqx` checkpoints +
+  the final weights are uploaded as a single `model-<run_id>` artifact
+  (`type="model"`). Defaults to `online` mode; set `mode = "offline"` in the
+  config for SLURM and `wandb sync` afterward.
+- `evaluate.py` — `uv run scripts/evaluate.py <run-name> [--project P]
+  [--entity E]`. Resolves the run by display name (`wandb_io.find_run`),
+  rebuilds the model/data from `run.config`, downloads the model artifact
+  (`weights.eqx`), computes train/val one-step MSE + sp4 rollout
+  nRMSE/correlation, then resumes the same run to log the metrics (summary) and
+  plots (`eval/*` images).
+- `animate.py` — `uv run scripts/animate.py <run-name> [--project P]
+  [--entity E]`. Downloads the run's checkpoint `weights_epoch_*.eqx`, animates
+  sp4 rollout ⟨m⟩ across them vs. a static ground truth, and logs the gif back
+  to the same run as `training_animation`.
 
 Training configs live in `configs/*.toml`; copy one per experiment — the file
 is the record. `default.toml` is the 128-epoch run (`hidden_channels=64`,
 `batch_size=50`, `lr=1e-4`, `small` dataset); `full.toml` is the intended
-256-epoch `med`-dataset run (currently stale — see below). `RUN_DIR` is a
-top-of-file constant in `evaluate.py`/`animate.py`; point it at the run to
-evaluate.
+256-epoch `med`-dataset run (currently stale — see below).
 
 ## Potential issues / next steps
 
@@ -140,11 +149,6 @@ evaluate.
   under `[data]`, neither of which is a valid config key, so
   `TrainConfig.from_toml` raises `ValueError` on unknown keys. Remove those
   keys (and re-tune `hidden_channels`/`batch_size`/`lr`) before using it.
-- `evaluate.py` passes `cfg.data.warmup_steps` (as the `seed` argument to
-  `dataset_loss`) but `DataConfig` has no `warmup_steps` field → `AttributeError`.
-  Its `RUN_DIR` default also points at a non-existent run
-  (`2026-05-26_12-18-10`); `animate.py` shares the same stale default. Both
-  need pointing at a real `results/<timestamp>/` dir.
 - The training objective is one-step MSE only — there is no multi-step /
   rollout-in-the-loop loss. The orphaned `warmup_steps` config above suggests a
   curriculum/multi-step loss was planned but not implemented.

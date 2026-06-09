@@ -1,4 +1,5 @@
 import argparse
+import tempfile
 from dataclasses import asdict
 from pathlib import Path
 
@@ -7,9 +8,8 @@ import jax.numpy as jnp
 import jax.random as jr
 import wandb
 from tqdm import tqdm
-
-from llg_emulator.checkpoint import make_run_dir
-from llg_emulator.config import dataset_dir
+import os
+from llg_emulator.config import dataset_dir, SP4_PATH
 from llg_emulator.data import load_trajectory, dataloader_factory, LLGStepperSource
 from llg_emulator.experiment import TrainConfig, build_activation, build_optimizer
 from llg_emulator.jax_setup import configure_jax
@@ -22,16 +22,19 @@ from llg_emulator.training import (
     trainable_filter,
     val_epoch,
 )
+from llg_emulator.wandb_io import model_artifact_name
 
 configure_jax()
 
 
-def test_rollout(model, m_true, H_ext, save_path: Path) -> None:
+def plot_trajectory_means(model, sample_path: Path):
+    """Roll out a trajectory and plot true vs. predicted <m_x,y,z> spatial
+    means over time (the same view produced during training)."""
+    m_true, H_ext = load_trajectory(sample_path)
     m_pred = rollout_trajectory(model, m_true, H_ext, include_init=True)
-    plot_m_means(
+    return plot_m_means(
         m_avg=jnp.mean(m_true, axis=(2, 3)),
         m_avg_pred=jnp.mean(m_pred, axis=(2, 3)),
-        save_path=save_path,
     )
 
 
@@ -45,19 +48,19 @@ def main():
     args = parser.parse_args()
 
     cfg = TrainConfig.from_toml(args.config)
-    save_path = make_run_dir()
-    cfg.save(save_path, args.config)
 
     wandb.init(
         project=cfg.wandb.project,
         entity=cfg.wandb.entity,
         mode=cfg.wandb.mode,
-        name=cfg.wandb.name or save_path.name,
-        dir=str(save_path),
+        name=cfg.wandb.name,
         config=asdict(cfg),
     )
-    wandb.summary["run_dir"] = str(save_path)
-    wandb.summary["config_path"] = args.config
+    assert wandb.run is not None
+
+    # staging dir for weights/plots before they go to the cloud; auto-removed.
+    # staging = tempfile.TemporaryDirectory()
+    # save_path = Path(staging.name)
 
     train_dataset = LLGStepperSource(dataset_dir("train", cfg.data.size))
     val_dataset = LLGStepperSource(dataset_dir("val", cfg.data.size))
@@ -91,22 +94,15 @@ def main():
     )
     wandb.summary["num_parameters"] = count_parameters(model)
 
-    # rollout viz trajectory + initial checkpoint
-    viz_path = dataset_dir("train", cfg.data.size).parent / cfg.data.viz_sample
-    m_true, H_ext = load_trajectory(viz_path)
-    trj0_path = save_path / "checkpoints/trjs/trj_epoch_0.png"
-    test_rollout(model, m_true=m_true, H_ext=H_ext, save_path=trj0_path)
-    wandb.log({"rollout/trj": wandb.Image(str(trj0_path))}, step=0)
-    eqx.tree_serialise_leaves(
-        save_path / "checkpoints/weights/weights_epoch_0.eqx", model
-    )
+    fig, axs = plot_trajectory_means(model=model, sample_path=SP4_PATH)
+    wandb.log({"plots/train/rollout_epoch_0": wandb.Image(fig)})
 
     optimizer = build_optimizer(cfg.optim)
     opt_state = optimizer.init(eqx.filter(model, trainable_filter(model)))
 
     train_history = []
     val_history = []
-    with tqdm(range(cfg.epochs)) as bar:
+    with tqdm(range(1, cfg.epochs + 1)) as bar:
         for i in bar:
             model, opt_state, train_loss = train_epoch(
                 model=model,
@@ -119,25 +115,20 @@ def main():
             val_loss = val_epoch(model=model, loader=val_loader(i))
             val_history.append(val_loss)
             bar.set_description(f"loss={val_loss:.4e}")
-            wandb.log({"train_loss": train_loss, "val_loss": val_loss}, step=i)
+            wandb.log({"train/loss": train_loss, "val/loss": val_loss}, step=i)
 
-            if (i + 1) % cfg.checkpoint_every == 0:
-                trj_path = save_path / f"checkpoints/trjs/trj_epoch_{i + 1}.png"
-                test_rollout(model, m_true=m_true, H_ext=H_ext, save_path=trj_path)
-                wandb.log({"rollout/trj": wandb.Image(str(trj_path))}, step=i)
-                eqx.tree_serialise_leaves(
-                    save_path / f"checkpoints/weights/weights_epoch_{i + 1}.eqx",
-                    model,
-                )
+            if i % cfg.checkpoint_every == 0:
+                fig, axs = plot_trajectory_means(model=model, sample_path=SP4_PATH)
+                wandb.log({f"plots/train/rollout_epoch_{i}": wandb.Image(fig)})
 
-    eqx.tree_serialise_leaves(save_path / "weights.eqx", model)
-    curve_path = save_path / "learning_curve.png"
-    plot_learning_curve(
-        train_history=train_history,
-        val_history=val_history,
-        save_path=curve_path,
-    )
-    wandb.log({"learning_curve": wandb.Image(str(curve_path))})
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, "weights.eqx")
+        eqx.tree_serialise_leaves(path, model)
+        artifact = wandb.Artifact("weights", type="model")
+        artifact.add_file(path)
+        wandb.log_artifact(artifact)
+        artifact.wait()
+
     wandb.finish()
 
 

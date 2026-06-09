@@ -1,0 +1,23 @@
+seed = 0
+epochs = 16
+checkpoint_every = 8
+
+[model]
+hidden_channels = 16
+num_blocks = 2
+activation = "gelu"
+
+[data]
+size = "med"          # small | med
+batch_size = 10
+viz_sample = "sp4/sample_0"
+
+[optim]
+name = "adam"
+lr = 1e-4
+
+[wandb]
+project = "llg-emulator"
+mode = "online"      # offline | online | disabled
+# entity = "jack-smithy-university-of-vienna"
+# name = "test"

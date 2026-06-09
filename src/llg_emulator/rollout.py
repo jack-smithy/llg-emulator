@@ -23,8 +23,8 @@ def rollout(stepper_fn, n: int, *, include_init: bool = False):
 
 def rollout_trajectory(
     model: LLGEmulator,
-    m_true: Array,
-    H_ext: Array,
+    m_true,
+    H_ext,
     *,
     include_init: bool = True,
 ) -> Array:

@@ -1,17 +1,15 @@
-"""Typed, file-backed training configuration.
+"""Typed training configuration.
 
 A run is fully specified by a TOML file. The resolved config (including
-defaults) is saved into the run dir so any run can be reproduced and any
-checkpoint reloaded with the correct architecture.
+defaults) is logged to wandb as the run config (``asdict(cfg)``), so any run
+can be reproduced and any checkpoint reloaded with the correct architecture via
+``TrainConfig.from_dict(run.config)``.
 """
 
 import dataclasses
-import json
-import shutil
 import tomllib
-from dataclasses import asdict, dataclass, field
-from pathlib import Path
-from typing import Callable
+from dataclasses import dataclass, field
+from typing import Callable, Literal
 
 import jax
 import optax
@@ -46,8 +44,10 @@ class OptimConfig:
 class WandbConfig:
     project: str = "llg-emulator"
     entity: str | None = None
-    mode: str = "offline"  # offline | online | disabled
-    name: str | None = None  # run name; defaults to the run dir timestamp
+    mode: Literal["online", "offline", "disabled", "shared"] = (
+        "online"  # online | offline | disabled
+    )
+    name: str | None = None  # run name; defaults to wandb's auto-generated name
 
 
 @dataclass
@@ -74,18 +74,6 @@ class TrainConfig:
     def from_toml(cls, path) -> "TrainConfig":
         with open(path, "rb") as f:
             return cls.from_dict(tomllib.load(f))
-
-    @classmethod
-    def from_run_dir(cls, run_dir) -> "TrainConfig":
-        with open(Path(run_dir) / "resolved_config.json") as f:
-            return cls.from_dict(json.load(f))
-
-    def save(self, run_dir, src_toml) -> None:
-        """Copy the source TOML verbatim and dump the fully-resolved config."""
-        run_dir = Path(run_dir)
-        shutil.copyfile(src_toml, run_dir / "config.toml")
-        with open(run_dir / "resolved_config.json", "w") as f:
-            json.dump(asdict(self), f, indent=2)
 
 
 def _field_names(cls) -> set:

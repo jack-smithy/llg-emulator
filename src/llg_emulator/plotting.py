@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-def plot_m_means(m_avg, m_avg_pred, save_path) -> None:
+def plot_m_means(m_avg, m_avg_pred):
     fig, axs = plt.subplots(nrows=1, ncols=3, sharey=True, figsize=(12, 4))
 
     assert m_avg.shape == m_avg_pred.shape
@@ -16,26 +16,22 @@ def plot_m_means(m_avg, m_avg_pred, save_path) -> None:
         axs[i].set_ylim(-1, 1)
         axs[i].set_title(labels[i])
 
-    plt.savefig(save_path)
-    plt.close()
+    return fig, axs
 
 
-def plot_learning_curve(train_history, val_history, save_path) -> None:
-    plt.semilogy(train_history, label="train")
-    plt.semilogy(val_history, label="val")
-    plt.legend()
-    plt.savefig(save_path)
-    plt.close()
+def plot_learning_curve(train_history, val_history):
+    fig, axs = plt.subplots(1, 1, figsize=(5, 4))
+    axs.semilogy(train_history, label="train")
+    axs.semilogy(val_history, label="val")
+    axs.legend()
+    return fig, axs
 
 
-def plot_rollout_metric(metric, name, save_path) -> None:
-    plt.figure()
-    plt.plot(np.arange(metric.shape[0]), metric)
-    plt.xlabel("rollout step")
-    plt.ylabel(name)
-    plt.title(f"SP4 {name} vs. step")
-    plt.grid(True, alpha=0.3)
-    plot_path = save_path / f"rollout_{name.lower()}.png"
-    plt.savefig(plot_path)
-    plt.close()
-    print(f"saved {plot_path}")
+def plot_rollout_metric(metric, name):
+    fig, axs = plt.subplots()
+    axs.plot(np.arange(metric.shape[0]), metric)
+    axs.set_xlabel("rollout step")
+    axs.set_ylabel(name)
+    axs.set_title(f"SP4 {name} vs. step")
+    axs.grid(True, alpha=0.3)
+    return fig, axs

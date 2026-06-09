@@ -1,25 +1,26 @@
-import json
+import argparse
+import tempfile
 from pathlib import Path
 
 import jax
 import jax.numpy as jnp
 import jax.random as jr
 import matplotlib.pyplot as plt
+import wandb
 
 from llg_emulator.checkpoint import load_model
-from llg_emulator.config import RESULTS_DIR, SP4_PATH, dataset_dir
+from llg_emulator.config import SP4_PATH, dataset_dir
 from llg_emulator.data import load_trajectory, LLGStepperSource, dataloader_factory
-from llg_emulator.experiment import TrainConfig
+from llg_emulator.experiment import TrainConfig, WandbConfig
 from llg_emulator.jax_setup import configure_jax
 from llg_emulator.metrics import correlation, nRMSE
 from llg_emulator.rollout import rollout_trajectory
 from llg_emulator.training import loss_fn
 from llg_emulator.plotting import plot_m_means, plot_rollout_metric
+from llg_emulator.wandb_io import download_model_dir, find_run
 from tqdm import tqdm
 
 configure_jax()
-# point this at the run dir to evaluate
-RUN_DIR = RESULTS_DIR / "2026-06-05_13-33-41"
 
 
 def rollout_stats(model, sample_path: Path):
@@ -32,19 +33,18 @@ def rollout_stats(model, sample_path: Path):
     return nrmse_curve, corr_curve, correlation(m_pred, m_true)
 
 
-def plot_trajectory_means(model, sample_path: Path, save_path: Path) -> None:
+def plot_trajectory_means(model, sample_path: Path):
     """Roll out a trajectory and plot true vs. predicted <m_x,y,z> spatial
     means over time (the same view produced during training)."""
     m_true, H_ext = load_trajectory(sample_path)
     m_pred = rollout_trajectory(model, m_true, H_ext, include_init=True)
-    plot_m_means(
+    return plot_m_means(
         m_avg=jnp.mean(m_true, axis=(2, 3)),
         m_avg_pred=jnp.mean(m_pred, axis=(2, 3)),
-        save_path=save_path / "traj.png",
     )
 
 
-def correlations_trajectory(model, path: Path, save_path):
+def correlations_trajectory(model, path: Path):
     paths_list = list(path.iterdir())
 
     traj_corrs = []
@@ -87,37 +87,59 @@ def correlations_trajectory(model, path: Path, save_path):
     axs[1].set_ylim((0, 1))
     axs[1].set(title="nRMSE", xlabel="step", ylabel="nRMSE")
 
-    fig.savefig(save_path / "rollouts.png")
-    plt.close(fig)
+    return fig, axs
 
 
-def dataset_loss(model, split: str, size: str, seed=0) -> float:
+def dataset_loss(model, batch_size: int, split: str, size: str, seed=0) -> float:
     """Mean one-step MSE over a data split."""
     dataset = LLGStepperSource(dataset_dir(split, size))
-    loader = dataloader_factory(dataset, batch_size=128)
-    total = 0.0
-    batch_ctr = 0
+    loader = dataloader_factory(dataset, batch_size=batch_size)
+    losses = []
     for batch in loader(seed=seed):
-        total += loss_fn(model, **batch).item()
-        batch_ctr += 1
-    return total / batch_ctr
+        losses.append(loss_fn(model, **batch))
+    return jnp.stack(losses).mean().item()
 
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="Evaluate a trained run, pulling weights from wandb."
+    )
+    parser.add_argument(
+        "run_name", help="wandb run display name (e.g. lively-firefly-3)"
+    )
+    parser.add_argument("--project", default=WandbConfig().project)
+    parser.add_argument("--entity", default=WandbConfig().entity)
+    args = parser.parse_args()
+
     print("starting evaluation")
-    cfg = TrainConfig.from_run_dir(RUN_DIR)
+    run_meta = find_run(args.run_name, args.project, args.entity)
+    cfg = TrainConfig.from_dict(dict(run_meta.config))
     key = jr.PRNGKey(cfg.seed)
+
+    # resume the run so eval metrics/plots land back on it
+    wandb.init(project=args.project, entity=args.entity, id=run_meta.id, resume="must")
+    weights_dir = Path(download_model_dir(wandb.run))
     model = load_model(
         key=key,
-        weights_path=RUN_DIR / "weights.eqx",
+        weights_path=weights_dir / "model.eqx",
         model_config=cfg.model,
     )
     print("model loaded")
 
-    correlations_trajectory(model, dataset_dir("val", "med"), RUN_DIR)
+    fig_rollout, axs = correlations_trajectory(model, dataset_dir("val", "med"))
 
-    train_loss = dataset_loss(model, "train", cfg.data.size)
-    val_loss = dataset_loss(model, "val", cfg.data.size)
+    train_loss = dataset_loss(
+        model,
+        split="train",
+        batch_size=cfg.data.batch_size,
+        size=cfg.data.size,
+    )
+    val_loss = dataset_loss(
+        model,
+        split="val",
+        batch_size=cfg.data.batch_size,
+        size=cfg.data.size,
+    )
     print("calculated dataset loss")
 
     nrmse_curve, corr_curve, corr = rollout_stats(model, SP4_PATH)
@@ -132,15 +154,20 @@ def main():
     }
     for k, v in stats.items():
         print(f"{k} = {v:.6e}")
+    wandb.summary.update(stats)
 
-    metrics_path = RUN_DIR / "metrics.json"
-    with open(metrics_path, "w") as f:
-        json.dump(stats, f, indent=2)
-    print(f"saved {metrics_path}")
-
-    plot_rollout_metric(nrmse_curve, "nRMSE", RUN_DIR)
-    plot_rollout_metric(corr_curve, "Correlation", RUN_DIR)
-    plot_trajectory_means(model, SP4_PATH, RUN_DIR)
+    fig_rmse, axs = plot_rollout_metric(nrmse_curve, "nRMSE")
+    fig_corr, axs = plot_rollout_metric(corr_curve, "Correlation")
+    fig_traj, axs = plot_trajectory_means(model, SP4_PATH)
+    wandb.log(
+        {
+            "plots/eval/rollouts": wandb.Image(fig_rollout),
+            "plots/sp4/rollouts": wandb.Image(fig_traj),
+            "plots/sp4/rollout_nrmse": wandb.Image(fig_rmse),
+            "plots/sp4/rollout_correlation": wandb.Image(fig_corr),
+        }
+    )
+    wandb.finish()
 
 
 if __name__ == "__main__":
