@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 #SBATCH -J train_llg
-#SBATCH -n 4
+#SBATCH -n 2
 #SBATCH --time="1:00:00"
 #SBATCH --partition=zen4_0768_h100x4
 #SBATCH --qos=zen4_0768_h100x4

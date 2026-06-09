@@ -7,6 +7,10 @@ name and fetch that artifact from the cloud.
 """
 
 import wandb
+import tempfile
+from pathlib import Path
+import equinox as eqx
+from dataclasses import asdict
 
 
 def model_artifact_name(run_id: str) -> str:
@@ -48,3 +52,22 @@ def download_model_dir(run) -> str:
         api = wandb.Api()
         artifact = api.artifact(f"{run.entity}/{run.project}/{artifact_ref}")
     return artifact.download()
+
+
+def save_weights(model, step=None, aliases=None):
+    assert wandb.run is not None
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "weights.eqx"
+        eqx.tree_serialise_leaves(path, model)
+        artifact = wandb.Artifact(
+            "weights",
+            type="model",
+            metadata={
+                "run_id": wandb.run.id,
+                "run_name": wandb.run.name,
+                "step": step,
+            },
+        )
+        artifact.add_file(str(path))
+        wandb.log_artifact(artifact, aliases=aliases)
+        artifact.wait()
