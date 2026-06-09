@@ -60,13 +60,8 @@ def save_weights(model, step=None, aliases=None):
         path = Path(tmpdir) / "weights.eqx"
         eqx.tree_serialise_leaves(path, model)
         artifact = wandb.Artifact(
-            "weights",
+            f"weights-{wandb.run.id}-epoch-{step}",
             type="model",
-            metadata={
-                "run_id": wandb.run.id,
-                "run_name": wandb.run.name,
-                "step": step,
-            },
         )
         artifact.add_file(str(path))
         wandb.log_artifact(artifact, aliases=aliases)

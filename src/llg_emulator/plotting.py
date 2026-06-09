@@ -1,6 +1,52 @@
 import matplotlib.pyplot as plt
 import numpy as np
 
+import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+
+def plot_m_means_plotly(m_avg, m_avg_pred):
+    assert m_avg.shape == m_avg_pred.shape
+
+    m_avg = np.asarray(m_avg)
+    m_avg_pred = np.asarray(m_avg_pred)
+
+    tt = np.arange(m_avg.shape[0])
+    labels = ["⟨m_x⟩", "⟨m_y⟩", "⟨m_z⟩"]
+
+    fig = make_subplots(rows=1, cols=3, shared_yaxes=True, subplot_titles=labels)
+
+    for i in range(3):
+        col = i + 1
+        fig.add_trace(
+            go.Scatter(
+                x=tt,
+                y=m_avg[:, i],
+                name="true",
+                line=dict(color="#636efa"),
+                legendgroup="true",
+                showlegend=(i == 0),
+            ),
+            row=1,
+            col=col,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=tt,
+                y=m_avg_pred[:, i],
+                name="pred",
+                line=dict(color="#ef553b"),
+                legendgroup="pred",
+                showlegend=(i == 0),
+            ),
+            row=1,
+            col=col,
+        )
+        fig.update_yaxes(range=[-1, 1], row=1, col=col)
+
+    return fig
+
 
 def plot_m_means(m_avg, m_avg_pred):
     fig, axs = plt.subplots(nrows=1, ncols=3, sharey=True, figsize=(12, 4))

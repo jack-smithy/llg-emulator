@@ -1,29 +1,27 @@
 import argparse
-import tempfile
 from dataclasses import asdict
 from pathlib import Path
 
 import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jr
-import wandb
 from tqdm import tqdm
-import matplotlib.pyplot as plt
-import os
-from llg_emulator.config import dataset_dir, SP4_PATH
-from llg_emulator.data import load_trajectory, dataloader_factory, LLGStepperSource
+
+import wandb
+from llg_emulator.config import SP4_PATH, dataset_dir
+from llg_emulator.data import LLGStepperSource, dataloader_factory, load_trajectory
 from llg_emulator.experiment import TrainConfig, build_activation, build_optimizer
 from llg_emulator.jax_setup import configure_jax
 from llg_emulator.model import LLGEmulator
-from llg_emulator.plotting import plot_m_means
+from llg_emulator.plotting import plot_m_means_plotly
 from llg_emulator.rollout import rollout_trajectory
-from llg_emulator.wandb_io import save_weights
 from llg_emulator.training import (
     count_parameters,
     train_epoch,
     trainable_filter,
     val_epoch,
 )
+from llg_emulator.wandb_io import save_weights
 
 configure_jax()
 
@@ -33,7 +31,7 @@ def plot_trajectory_means(model, sample_path: Path):
     means over time (the same view produced during training)."""
     m_true, H_ext = load_trajectory(sample_path)
     m_pred = rollout_trajectory(model, m_true, H_ext, include_init=True)
-    return plot_m_means(
+    return plot_m_means_plotly(
         m_avg=jnp.mean(m_true, axis=(2, 3)),
         m_avg_pred=jnp.mean(m_pred, axis=(2, 3)),
     )
@@ -79,6 +77,7 @@ def main():
     wandb.summary["train_ratio"] = train_ratio
 
     key = jr.PRNGKey(cfg.seed)
+
     key, subkey = jr.split(key)
     model = LLGEmulator(
         hidden_channels=cfg.model.hidden_channels,
@@ -91,16 +90,12 @@ def main():
     )
     wandb.summary["num_parameters"] = count_parameters(model)
 
-    fig, axs = plot_trajectory_means(model=model, sample_path=SP4_PATH)
-    wandb.log({"plots/train/rollout_epoch_0": wandb.Image(fig)})
-    plt.close(fig)
-
     optimizer = build_optimizer(cfg.optim)
     opt_state = optimizer.init(eqx.filter(model, trainable_filter(model)))
 
     train_history = []
     val_history = []
-    with tqdm(range(1, cfg.epochs + 1)) as bar:
+    with tqdm(range(cfg.epochs)) as bar:
         for i in bar:
             model, opt_state, train_loss = train_epoch(
                 model=model,
@@ -110,18 +105,21 @@ def main():
             )
             train_history.append(train_loss)
 
-            val_loss = val_epoch(model=model, loader=val_loader(i))
+            val_loss = val_epoch(model=model, loader=val_loader(seed=i))
             val_history.append(val_loss)
             bar.set_description(f"loss={val_loss:.4e}")
+
             log_dict = {"train/loss": train_loss, "val/loss": val_loss}
+
             if i % cfg.checkpoint_every == 0:
-                fig, _ = plot_trajectory_means(model=model, sample_path=SP4_PATH)
-                log_dict["plots/train/rollout"] = wandb.Image(fig)
-                plt.close(fig)
+                log_dict["val/rollout"] = plot_trajectory_means(
+                    model=model, sample_path=SP4_PATH
+                )
                 save_weights(model, step=i)
+
             wandb.log(log_dict, step=i)
 
-    save_weights(model, step=cfg.epochs + 1, aliases="final")
+    save_weights(model, step=cfg.epochs, aliases="final")
     wandb.finish()
 
 
