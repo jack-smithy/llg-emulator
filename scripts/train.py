@@ -3,9 +3,9 @@ from dataclasses import asdict
 from pathlib import Path
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import jax.random as jr
-import jax
 import jax.sharding as jshard
 from tqdm import tqdm
 
@@ -14,6 +14,7 @@ from llg_emulator.config import SP4_PATH, dataset_dir
 from llg_emulator.data import LLGStepperSource, dataloader_factory, load_trajectory
 from llg_emulator.experiment import TrainConfig, build_activation, build_optimizer
 from llg_emulator.jax_setup import configure_jax
+from llg_emulator.metrics import correlation
 from llg_emulator.model import LLGEmulator
 from llg_emulator.plotting import plot_m_means_plotly
 from llg_emulator.rollout import rollout_trajectory
@@ -102,9 +103,8 @@ def main():
     optimizer = build_optimizer(cfg.optim)
     opt_state = optimizer.init(eqx.filter(model, trainable_filter(model)))
 
-    train_history = []
-    val_history = []
     with tqdm(range(cfg.epochs)) as bar:
+        bar.set_description("loss=inf")
         for i in bar:
             model, opt_state, train_loss = train_epoch(
                 model=model,
@@ -114,7 +114,6 @@ def main():
                 model_sharding=model_sharding,
                 data_sharding=data_sharding,
             )
-            train_history.append(train_loss)
 
             val_loss = val_epoch(
                 model=model,
@@ -122,18 +121,19 @@ def main():
                 model_sharding=model_sharding,
                 data_sharding=data_sharding,
             )
-            val_history.append(val_loss)
+
+            corr = correlation(model, val_dataset)
+
+            # if i % cfg.checkpoint_every == 0:
+            #     log_dict["val/rollout"] = plot_trajectory_means(
+            #         model=model, sample_path=SP4_PATH
+            #     )
+            #     save_weights(model, step=i)
             bar.set_description(f"loss={val_loss:.4e}")
-
-            log_dict = {"train/loss": train_loss, "val/loss": val_loss}
-
-            if i % cfg.checkpoint_every == 0:
-                log_dict["val/rollout"] = plot_trajectory_means(
-                    model=model, sample_path=SP4_PATH
-                )
-                save_weights(model, step=i)
-
-            wandb.log(log_dict, step=i)
+            wandb.log(
+                {"train/loss": train_loss, "val/loss": val_loss, "val/corr": corr},
+                step=i,
+            )
 
     wandb.log(
         {"val/rollout": plot_trajectory_means(model=model, sample_path=SP4_PATH)},

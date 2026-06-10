@@ -6,7 +6,7 @@ import jax.tree_util as jtu
 from jaxtyping import Array, PyTree
 
 from llg_emulator.model import LLGEmulator
-from llg_emulator.metrics import mse
+from llg_emulator.metrics import MSE
 
 
 def trainable_filter(model: LLGEmulator):
@@ -29,7 +29,7 @@ def count_parameters(model: LLGEmulator) -> int:
 def loss_fn(model: LLGEmulator, m0: Array, m1: Array, H: Array) -> Array:
     """One-step MSE — the training objective, shared by train + evaluate."""
     m1_pred = jax.vmap(model)(*(m0, H))
-    return mse(m1_pred, m1)
+    return MSE(m1_pred, m1)
 
 
 @eqx.filter_jit(donate="all-except-first")
@@ -78,7 +78,12 @@ def train_epoch(
     for batch in loader:
         batch = eqx.filter_shard(batch, data_sharding)
         model, opt_state, loss = update_fn(
-            batch, data_sharding, model, model_sharding, optimizer, opt_state
+            batch=batch,
+            data_sharding=data_sharding,
+            model=model,
+            model_sharding=model_sharding,
+            optimizer=optimizer,
+            opt_state=opt_state,
         )
         losses.append(loss)
     return model, opt_state, jnp.stack(losses).mean().item()
@@ -88,6 +93,11 @@ def val_epoch(model, loader: grain.IterDataset, model_sharding, data_sharding) -
     inference_model = eqx.nn.inference_mode(model)
     losses = []
     for batch in loader:
-        loss = evaluate_fn(batch, inference_model, model_sharding, data_sharding)
+        loss = evaluate_fn(
+            batch=batch,
+            model=inference_model,
+            model_sharding=model_sharding,
+            data_sharding=data_sharding,
+        )
         losses.append(loss)
     return jnp.stack(losses).mean().item()

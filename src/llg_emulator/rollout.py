@@ -1,7 +1,6 @@
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array
-
 from llg_emulator.model import LLGEmulator
 
 
@@ -35,3 +34,8 @@ def rollout_trajectory(
         n=n,
         include_init=include_init,
     )(m_true[0])
+
+
+def rollout_trajectories(m_true, h_ext, model):
+    m_pred = jax.vmap(lambda m, h: rollout_trajectory(model, m, h))(*(m_true, h_ext))
+    return m_pred

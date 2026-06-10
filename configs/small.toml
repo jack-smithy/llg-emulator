@@ -1,6 +1,6 @@
 seed = 0
 epochs = 8
-checkpoint_every = 2
+checkpoint_every = 4
 
 [model]
 hidden_channels = 32
@@ -9,7 +9,7 @@ activation = "gelu"
 
 [data]
 size = "med"
-batch_size = 50
+batch_size = 192
 viz_sample = "sp4/sample_0"
 
 [optim]
