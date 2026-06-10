@@ -5,6 +5,8 @@ from pathlib import Path
 import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jr
+import jax
+import jax.sharding as jshard
 from tqdm import tqdm
 
 import wandb
@@ -57,6 +59,13 @@ def main():
     )
     assert wandb.run is not None
 
+    num_devices = len(jax.devices())
+    mesh = jax.make_mesh(
+        (num_devices,), ("batch",), axis_types=(jax.sharding.AxisType.Auto,)
+    )
+    data_sharding = jshard.NamedSharding(mesh, jshard.PartitionSpec("batch"))
+    model_sharding = jshard.NamedSharding(mesh, jshard.PartitionSpec())
+
     train_dataset = LLGStepperSource(dataset_dir("train", cfg.data.size))
     val_dataset = LLGStepperSource(dataset_dir("val", cfg.data.size))
 
@@ -102,10 +111,17 @@ def main():
                 loader=train_loader(seed=i),
                 optimizer=optimizer,
                 opt_state=opt_state,
+                model_sharding=model_sharding,
+                data_sharding=data_sharding,
             )
             train_history.append(train_loss)
 
-            val_loss = val_epoch(model=model, loader=val_loader(seed=i))
+            val_loss = val_epoch(
+                model=model,
+                loader=val_loader(seed=i),
+                model_sharding=model_sharding,
+                data_sharding=data_sharding,
+            )
             val_history.append(val_loss)
             bar.set_description(f"loss={val_loss:.4e}")
 
@@ -118,6 +134,11 @@ def main():
                 save_weights(model, step=i)
 
             wandb.log(log_dict, step=i)
+
+    wandb.log(
+        {"val/rollout": plot_trajectory_means(model=model, sample_path=SP4_PATH)},
+        step=cfg.epochs,
+    )
 
     save_weights(model, step=cfg.epochs, aliases="final")
     wandb.finish()

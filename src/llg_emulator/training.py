@@ -3,7 +3,7 @@ import grain
 import jax
 import jax.numpy as jnp
 import jax.tree_util as jtu
-from jaxtyping import Array
+from jaxtyping import Array, PyTree
 
 from llg_emulator.model import LLGEmulator
 from llg_emulator.metrics import mse
@@ -33,12 +33,24 @@ def loss_fn(model: LLGEmulator, m0: Array, m1: Array, H: Array) -> Array:
 
 
 @eqx.filter_jit(donate="all-except-first")
-def evaluate_fn(batch, model):
+def evaluate_fn(model: LLGEmulator, batch: PyTree, model_sharding, data_sharding):
+    model = eqx.filter_shard(model, model_sharding)
+    batch = eqx.filter_shard(batch, data_sharding)
     return loss_fn(model, **batch)
 
 
-@eqx.filter_jit(donate="all-except-first")
-def update_fn(batch, model, optimizer, opt_state):
+@eqx.filter_jit(donate="all")
+def update_fn(
+    model: LLGEmulator,
+    batch: PyTree,
+    data_sharding,
+    model_sharding,
+    optimizer,
+    opt_state,
+):
+    model, opt_state = eqx.filter_shard((model, opt_state), model_sharding)
+    batch = eqx.filter_shard(batch, data_sharding)
+
     diff, static = eqx.partition(model, trainable_filter(model))
 
     def diff_loss(diff):
@@ -47,21 +59,35 @@ def update_fn(batch, model, optimizer, opt_state):
     loss, grad = eqx.filter_value_and_grad(diff_loss)(diff)
     updates, opt_state = optimizer.update(grad, opt_state)
     diff = eqx.apply_updates(diff, updates)
-    return eqx.combine(diff, static), opt_state, loss
+    model = eqx.combine(diff, static)
+    model, opt_state = eqx.filter_shard((model, opt_state), model_sharding)
+    return model, opt_state, loss
 
 
-def train_epoch(model, loader: grain.IterDataset, optimizer, opt_state):
+def train_epoch(
+    model,
+    loader: grain.IterDataset,
+    optimizer,
+    opt_state,
+    model_sharding,
+    data_sharding,
+):
+    model, opt_state = eqx.filter_shard((model, opt_state), model_sharding)
+
     losses = []
     for batch in loader:
-        model, opt_state, loss = update_fn(batch, model, optimizer, opt_state)
+        batch = eqx.filter_shard(batch, data_sharding)
+        model, opt_state, loss = update_fn(
+            batch, data_sharding, model, model_sharding, optimizer, opt_state
+        )
         losses.append(loss)
     return model, opt_state, jnp.stack(losses).mean().item()
 
 
-def val_epoch(model, loader: grain.IterDataset) -> float:
+def val_epoch(model, loader: grain.IterDataset, model_sharding, data_sharding) -> float:
     inference_model = eqx.nn.inference_mode(model)
     losses = []
     for batch in loader:
-        loss = evaluate_fn(batch, inference_model)
+        loss = evaluate_fn(batch, inference_model, model_sharding, data_sharding)
         losses.append(loss)
     return jnp.stack(losses).mean().item()
