@@ -124,14 +124,20 @@ def main():
 
             corr = correlation(model, val_dataset)
 
-            # if i % cfg.checkpoint_every == 0:
-            #     log_dict["val/rollout"] = plot_trajectory_means(
-            #         model=model, sample_path=SP4_PATH
-            #     )
-            #     save_weights(model, step=i)
+            log_dict = {
+                "train/loss": train_loss,
+                "val/loss": val_loss,
+                "val/corr": corr,
+            }
+            if i % cfg.checkpoint_every == 0:
+                log_dict["val/rollout"] = plot_trajectory_means(
+                    model=model, sample_path=SP4_PATH
+                )
+                save_weights(model, step=i)
+
             bar.set_description(f"loss={val_loss:.4e}")
             wandb.log(
-                {"train/loss": train_loss, "val/loss": val_loss, "val/corr": corr},
+                log_dict,
                 step=i,
             )
 

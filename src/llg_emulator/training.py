@@ -43,10 +43,10 @@ def evaluate_fn(model: LLGEmulator, batch: PyTree, model_sharding, data_sharding
 def update_fn(
     model: LLGEmulator,
     batch: PyTree,
-    data_sharding,
-    model_sharding,
     optimizer,
     opt_state,
+    model_sharding,
+    data_sharding,
 ):
     model, opt_state = eqx.filter_shard((model, opt_state), model_sharding)
     batch = eqx.filter_shard(batch, data_sharding)
@@ -91,6 +91,7 @@ def train_epoch(
 
 def val_epoch(model, loader: grain.IterDataset, model_sharding, data_sharding) -> float:
     inference_model = eqx.nn.inference_mode(model)
+
     losses = []
     for batch in loader:
         loss = evaluate_fn(
