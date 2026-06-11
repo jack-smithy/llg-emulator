@@ -1,7 +1,5 @@
 import matplotlib.pyplot as plt
 import numpy as np
-
-import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
@@ -44,6 +42,39 @@ def plot_m_means_plotly(m_avg, m_avg_pred):
             col=col,
         )
         fig.update_yaxes(range=[-1, 1], row=1, col=col)
+
+    return fig
+
+
+def plot_corr_plotly(corr_mean, corr_std):
+    x = np.arange(corr_mean.shape[0])
+
+    fig = go.Figure()
+
+    # Mean line
+    fig.add_trace(
+        go.Scatter(
+            x=x,
+            y=corr_mean,
+            mode="lines",
+            name="mean",
+        )
+    )
+
+    # Shaded ± std region
+    fig.add_trace(
+        go.Scatter(
+            x=np.concatenate([x, x[::-1]]),
+            y=np.concatenate([corr_mean + corr_std, (corr_mean - corr_std)[::-1]]),
+            fill="toself",
+            fillcolor="rgba(0,100,80,0.3)",
+            line=dict(color="rgba(255,255,255,0)"),
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
+
+    fig.update_yaxes(range=[0, 1.1])
 
     return fig
 

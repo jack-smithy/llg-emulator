@@ -7,7 +7,8 @@ from jaxtyping import Array, PyTree
 
 from llg_emulator.model import LLGEmulator
 from llg_emulator.metrics import MSE, correlation
-from llg_emulator.rollout import rollout_trajectories
+from llg_emulator.rollout import rollout_trajectories, rollout_trajectory
+from llg_emulator.data import load_trajectory
 
 
 def trainable_filter(model: LLGEmulator):
@@ -105,8 +106,15 @@ def val_epoch(model, loader: grain.IterDataset, model_sharding, data_sharding) -
     return jnp.stack(losses).mean().item()
 
 
-def correlation_epoch(model, source) -> float:
+def correlation_epoch(model, source):
     m_ref = jnp.stack(source.trajs, axis=0)
     h_ext = jnp.stack(source.fields, axis=0)
     m_pred = rollout_trajectories(m_ref, h_ext, model)
-    return correlation(m_pred, m_ref).item()
+    mean, std = correlation(m_pred, m_ref)
+    return mean, std
+
+
+def bulk_magnetization(model, path):
+    m_true, H_ext = load_trajectory(path)
+    m_pred = rollout_trajectory(model, m_true, H_ext, include_init=True)
+    return jnp.mean(m_true, axis=(2, 3)), jnp.mean(m_pred, axis=(2, 3))

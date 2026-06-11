@@ -1,43 +1,30 @@
 import argparse
 from dataclasses import asdict
-from pathlib import Path
 
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 import jax.random as jr
 import jax.sharding as jshard
 from tqdm import tqdm
 
 import wandb
 from llg_emulator.config import SP4_PATH, dataset_dir
-from llg_emulator.data import LLGStepperSource, dataloader_factory, load_trajectory
+from llg_emulator.data import LLGStepperSource, dataloader_factory
 from llg_emulator.experiment import TrainConfig, build_activation, build_optimizer
 from llg_emulator.jax_setup import configure_jax
 from llg_emulator.model import LLGEmulator
-from llg_emulator.plotting import plot_m_means_plotly
-from llg_emulator.rollout import rollout_trajectory
+from llg_emulator.plotting import plot_m_means_plotly, plot_corr_plotly
 from llg_emulator.training import (
     count_parameters,
     train_epoch,
     trainable_filter,
     val_epoch,
     correlation_epoch,
+    bulk_magnetization,
 )
 from llg_emulator.wandb_io import save_weights
 
 configure_jax()
-
-
-def plot_trajectory_means(model, sample_path: Path):
-    """Roll out a trajectory and plot true vs. predicted <m_x,y,z> spatial
-    means over time (the same view produced during training)."""
-    m_true, H_ext = load_trajectory(sample_path)
-    m_pred = rollout_trajectory(model, m_true, H_ext, include_init=True)
-    return plot_m_means_plotly(
-        m_avg=jnp.mean(m_true, axis=(2, 3)),
-        m_avg_pred=jnp.mean(m_pred, axis=(2, 3)),
-    )
 
 
 def main():
@@ -122,17 +109,23 @@ def main():
                 data_sharding=data_sharding,
             )
 
-            corr = correlation_epoch(model, val_dataset)
-
             log_dict = {
                 "train/loss": train_loss,
                 "val/loss": val_loss,
-                "val/corr": corr,
             }
+
             if i % cfg.checkpoint_every == 0:
-                log_dict["val/rollout"] = plot_trajectory_means(
-                    model=model, sample_path=SP4_PATH
+                m_mean_ref, m_mean_pred = bulk_magnetization(model, SP4_PATH)
+                log_dict["val/rollout"] = plot_m_means_plotly(m_mean_ref, m_mean_pred)
+
+                corr_mean, corr_std = correlation_epoch(model, val_dataset)
+                log_dict["val/corr_rollout"] = plot_corr_plotly(
+                    corr_mean=corr_mean, corr_std=corr_std
                 )
+                log_dict["val/corr_mean"] = corr_mean.mean().item()
+                log_dict["val/corr_std"] = corr_std.mean().item()
+                log_dict["val/corr_final"] = corr_mean[-1].item()
+
                 save_weights(model, step=i)
 
             bar.set_description(f"loss={val_loss:.4e}")
@@ -142,7 +135,7 @@ def main():
             )
 
     wandb.log(
-        {"val/rollout": plot_trajectory_means(model=model, sample_path=SP4_PATH)},
+        {"val/rollout": plot_m_means_plotly(*bulk_magnetization(model, SP4_PATH))},
         step=cfg.epochs,
     )
 

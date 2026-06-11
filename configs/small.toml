@@ -1,15 +1,15 @@
 seed = 0
-epochs = 128
-checkpoint_every = 4
+epochs = 64
+checkpoint_every = 8
 
 [model]
-hidden_channels = 32
-num_blocks = 2
+hidden_channels = 64
+num_blocks = 4
 activation = "gelu"
 
 [data]
 size = "small"
-batch_size = 100
+batch_size = 256
 viz_sample = "sp4/sample_0"
 
 [optim]
