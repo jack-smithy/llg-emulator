@@ -106,11 +106,31 @@ def val_epoch(model, loader: grain.IterDataset, model_sharding, data_sharding) -
     return jnp.stack(losses).mean().item()
 
 
-def correlation_epoch(model, source):
+@eqx.filter_jit
+def rollout_sharded(model, m_ref, h_ext, model_sharding, data_sharding):
+    model = eqx.filter_shard(model, model_sharding)
+    m_ref = eqx.filter_shard(m_ref, data_sharding)
+    h_ext = eqx.filter_shard(h_ext, data_sharding)
+    m_pred = rollout_trajectories(m_ref, h_ext, model)
+    return eqx.filter_shard(m_pred, data_sharding)
+
+
+def correlation_epoch(model, source, model_sharding, data_sharding):
     m_ref = jnp.stack(source.trajs, axis=0)
     h_ext = jnp.stack(source.fields, axis=0)
-    m_pred = rollout_trajectories(m_ref, h_ext, model)
-    mean, std = correlation(m_pred, m_ref)
+
+    # Shard the trajectory rollout across devices on the leading (batch) axis;
+    # that axis must divide the device count, so pad up and slice back before
+    # the (batch-reducing) correlation so padded trajectories don't bias it.
+    n = m_ref.shape[0]
+    num_devices = data_sharding.mesh.size
+    pad = (-n) % num_devices
+    if pad:
+        m_ref = jnp.concatenate([m_ref, m_ref[:pad]], axis=0)
+        h_ext = jnp.concatenate([h_ext, h_ext[:pad]], axis=0)
+
+    m_pred = rollout_sharded(model, m_ref, h_ext, model_sharding, data_sharding)
+    mean, std = correlation(m_pred[:n], m_ref[:n])
     return mean, std
 
 

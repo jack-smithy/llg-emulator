@@ -109,7 +109,12 @@ def main(cfg):
                 m_mean_ref, m_mean_pred = bulk_magnetization(model, SP4_PATH)
                 log_dict["val/rollout"] = plot_m_means_plotly(m_mean_ref, m_mean_pred)
 
-                corr_mean, corr_std = correlation_epoch(model, val_dataset)
+                corr_mean, corr_std = correlation_epoch(
+                    model,
+                    val_dataset,
+                    model_sharding=model_sharding,
+                    data_sharding=data_sharding,
+                )
                 log_dict["val/corr_rollout"] = plot_corr_plotly(
                     corr_mean=corr_mean, corr_std=corr_std
                 )
