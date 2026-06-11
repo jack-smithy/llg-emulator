@@ -1,11 +1,11 @@
 # Full training run (256 epochs).
 
 seed = 0
-epochs = 256
-checkpoint_every = 8
+epochs = 16
+checkpoint_every = 2
 
 [model]
-hidden_channels = 32
+hidden_channels = 64
 num_blocks = 4
 activation = "gelu"
 

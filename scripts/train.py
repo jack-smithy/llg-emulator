@@ -10,7 +10,15 @@ from tqdm import tqdm
 import wandb
 from llg_emulator.config import SP4_PATH, dataset_dir
 from llg_emulator.data import LLGStepperSource, dataloader_factory
-from llg_emulator.experiment import TrainConfig, build_activation, build_optimizer
+from llg_emulator.experiment import (
+    TrainConfig,
+    build_activation,
+    build_optimizer,
+    OptimConfig,
+    ModelConfig,
+    DataConfig,
+    WandbConfig,
+)
 from llg_emulator.jax_setup import configure_jax
 from llg_emulator.model import LLGEmulator
 from llg_emulator.plotting import plot_m_means_plotly, plot_corr_plotly
@@ -37,6 +45,12 @@ def main(cfg):
         config=asdict(cfg),
     )
     assert wandb.run is not None
+
+    # Under a wandb sweep the agent injects swept hyperparameters (e.g.
+    # optim.lr) into wandb.config, overriding the values we passed above.
+    # Rebuild cfg from the reconciled config so the run actually trains with
+    # them. Outside a sweep this is a no-op round-trip.
+    cfg = TrainConfig.from_dict(dict(wandb.config))
 
     num_devices = len(jax.devices())
     mesh = jax.make_mesh(
@@ -149,5 +163,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     cfg = TrainConfig.from_toml(args.config)
+
+    num_devices = len(jax.devices())
 
     main(cfg=cfg)

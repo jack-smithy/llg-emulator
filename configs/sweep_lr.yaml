@@ -1,0 +1,39 @@
+# wandb sweep: learning-rate search.
+#
+#   wandb sweep configs/sweep_lr.yaml        # prints a SWEEP_ID
+#   CUDA_VISIBLE_DEVICES=0,1,2,3 wandb agent <entity>/llg-emulator/<SWEEP_ID>
+#
+# The agent injects the sampled optim.lr into wandb.config; train.py rebuilds
+# its TrainConfig from wandb.config, so the base TOML's lr is overridden while
+# everything else (dataset, epochs, model) comes from --config below. Point the
+# command at a cheaper config (e.g. configs/small.toml) for a faster search.
+
+program: scripts/train.py
+method: bayes  # bayes | random | grid
+
+metric:
+  name: val/loss
+  goal: minimize
+
+# train.py takes only --config (it reads swept params from wandb.config), so we
+# define an explicit command WITHOUT the default ${args} expansion.
+command:
+  - ${env}
+  - uv
+  - run
+  - scripts/train.py
+  - --config
+  - configs/small.toml
+
+parameters:
+  optim:
+    parameters:
+      lr:
+        distribution: log_uniform_values
+        min: 1.0e-5
+        max: 1.0e-2
+
+# Optionally stop unpromising runs early:
+# early_terminate:
+#   type: hyperband
+#   min_iter: 4
