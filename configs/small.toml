@@ -1,5 +1,5 @@
 seed = 0
-epochs = 8
+epochs = 128
 checkpoint_every = 4
 
 [model]
@@ -8,8 +8,8 @@ num_blocks = 2
 activation = "gelu"
 
 [data]
-size = "med"
-batch_size = 192
+size = "small"
+batch_size = 100
 viz_sample = "sp4/sample_0"
 
 [optim]

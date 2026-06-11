@@ -14,7 +14,6 @@ from llg_emulator.config import SP4_PATH, dataset_dir
 from llg_emulator.data import LLGStepperSource, dataloader_factory, load_trajectory
 from llg_emulator.experiment import TrainConfig, build_activation, build_optimizer
 from llg_emulator.jax_setup import configure_jax
-from llg_emulator.metrics import correlation
 from llg_emulator.model import LLGEmulator
 from llg_emulator.plotting import plot_m_means_plotly
 from llg_emulator.rollout import rollout_trajectory
@@ -23,6 +22,7 @@ from llg_emulator.training import (
     train_epoch,
     trainable_filter,
     val_epoch,
+    correlation_epoch,
 )
 from llg_emulator.wandb_io import save_weights
 
@@ -122,7 +122,7 @@ def main():
                 data_sharding=data_sharding,
             )
 
-            corr = correlation(model, val_dataset)
+            corr = correlation_epoch(model, val_dataset)
 
             log_dict = {
                 "train/loss": train_loss,

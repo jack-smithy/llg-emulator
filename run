@@ -1,1 +1,1 @@
-uv run scripts/train.py --config configs/small.toml
+CUDA_VISIBLE_DEVICES=0,1 uv run scripts/train.py --config configs/small.toml

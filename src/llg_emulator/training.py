@@ -6,7 +6,8 @@ import jax.tree_util as jtu
 from jaxtyping import Array, PyTree
 
 from llg_emulator.model import LLGEmulator
-from llg_emulator.metrics import MSE
+from llg_emulator.metrics import MSE, correlation
+from llg_emulator.rollout import rollout_trajectories
 
 
 def trainable_filter(model: LLGEmulator):
@@ -102,3 +103,10 @@ def val_epoch(model, loader: grain.IterDataset, model_sharding, data_sharding) -
         )
         losses.append(loss)
     return jnp.stack(losses).mean().item()
+
+
+def correlation_epoch(model, source) -> float:
+    m_ref = jnp.stack(source.trajs, axis=0)
+    h_ext = jnp.stack(source.fields, axis=0)
+    m_pred = rollout_trajectories(m_ref, h_ext, model)
+    return correlation(m_pred, m_ref).item()

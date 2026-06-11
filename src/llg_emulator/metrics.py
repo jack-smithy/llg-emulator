@@ -7,14 +7,7 @@ def nRMSE(pred, ref) -> Array:
     return jnp.linalg.norm(pred - ref) / jnp.linalg.norm(ref)
 
 
-def correlation(model, source) -> float:
-    m_ref = jnp.stack(source.trajs, axis=0)
-    h_ext = jnp.stack(source.fields, axis=0)
-    m_pred = rollout_trajectories(m_ref, h_ext, model)
-    return _correlation(m_pred, m_ref).item()
-
-
-def _correlation(pred, ref):
+def correlation(pred, ref):
     assert pred.shape == ref.shape
     assert len(pred.shape) >= 4
     # both shape (..., t, c, nx, ny)
