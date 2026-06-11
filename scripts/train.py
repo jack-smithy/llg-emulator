@@ -27,16 +27,7 @@ from llg_emulator.wandb_io import save_weights
 configure_jax()
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Train the LLG emulator.")
-    parser.add_argument(
-        "--config",
-        default="configs/default.toml",
-        help="path to a TOML training config (fully specifies the run)",
-    )
-    args = parser.parse_args()
-
-    cfg = TrainConfig.from_toml(args.config)
+def main(cfg):
 
     wandb.init(
         project=cfg.wandb.project,
@@ -144,4 +135,14 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Train the LLG emulator.")
+    parser.add_argument(
+        "--config",
+        default="configs/default.toml",
+        help="path to a TOML training config (fully specifies the run)",
+    )
+    args = parser.parse_args()
+
+    cfg = TrainConfig.from_toml(args.config)
+
+    main(cfg=cfg)
