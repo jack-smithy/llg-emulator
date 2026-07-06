@@ -36,6 +36,5 @@ def rollout_trajectory(
     )(m_true[0])
 
 
-def rollout_trajectories(m_true, h_ext, model):
-    m_pred = jax.vmap(lambda m, h: rollout_trajectory(model, m, h))(*(m_true, h_ext))
-    return m_pred
+def rollout_trajectories(model, m_true, h_ext):
+    return jax.vmap(lambda m, h: rollout_trajectory(model, m, h))(m_true, h_ext)

@@ -4,21 +4,12 @@ from dataclasses import asdict
 import equinox as eqx
 import jax
 import jax.random as jr
-import jax.sharding as jshard
 from tqdm import tqdm
 
 import wandb
 from llg_emulator.config import SP4_PATH, dataset_dir
 from llg_emulator.data import LLGStepperSource, dataloader_factory
-from llg_emulator.experiment import (
-    TrainConfig,
-    build_activation,
-    build_optimizer,
-    OptimConfig,
-    ModelConfig,
-    DataConfig,
-    WandbConfig,
-)
+from llg_emulator.experiment import TrainConfig, build_activation, build_optimizer
 from llg_emulator.jax_setup import configure_jax
 from llg_emulator.model import LLGEmulator
 from llg_emulator.plotting import plot_m_means_plotly, plot_corr_plotly
@@ -51,13 +42,6 @@ def main(cfg):
     # Rebuild cfg from the reconciled config so the run actually trains with
     # them. Outside a sweep this is a no-op round-trip.
     cfg = TrainConfig.from_dict(dict(wandb.config))
-
-    num_devices = len(jax.devices())
-    mesh = jax.make_mesh(
-        (num_devices,), ("batch",), axis_types=(jax.sharding.AxisType.Auto,)
-    )
-    data_sharding = jshard.NamedSharding(mesh, jshard.PartitionSpec("batch"))
-    model_sharding = jshard.NamedSharding(mesh, jshard.PartitionSpec())
 
     train_dataset = LLGStepperSource(dataset_dir("train", cfg.data.size))
     val_dataset = LLGStepperSource(dataset_dir("val", cfg.data.size))
@@ -103,16 +87,9 @@ def main(cfg):
                 loader=train_loader(seed=i),
                 optimizer=optimizer,
                 opt_state=opt_state,
-                model_sharding=model_sharding,
-                data_sharding=data_sharding,
             )
 
-            val_loss = val_epoch(
-                model=model,
-                loader=val_loader(seed=i),
-                model_sharding=model_sharding,
-                data_sharding=data_sharding,
-            )
+            val_loss = val_epoch(model=model, loader=val_loader(seed=i))
 
             log_dict = {
                 "train/loss": train_loss,
@@ -123,12 +100,7 @@ def main(cfg):
                 m_mean_ref, m_mean_pred = bulk_magnetization(model, SP4_PATH)
                 log_dict["val/rollout"] = plot_m_means_plotly(m_mean_ref, m_mean_pred)
 
-                corr_mean, corr_std = correlation_epoch(
-                    model,
-                    val_dataset,
-                    model_sharding=model_sharding,
-                    data_sharding=data_sharding,
-                )
+                corr_mean, corr_std = correlation_epoch(model, val_dataset)
                 log_dict["val/corr_rollout"] = plot_corr_plotly(
                     corr_mean=corr_mean, corr_std=corr_std
                 )
