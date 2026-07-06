@@ -1,163 +1,106 @@
 # llg-emulator
 
-Learn LLG (Landau–Lifshitz–Gilbert) magnetization dynamics for a permalloy-ish
-thin film. The model is a neural surrogate that maps one magnetization field +
-applied field to the next timestep, then is autoregressively rolled out to
-reproduce a full trajectory. Built on JAX / Equinox, using
-[PDEquinox](https://github.com/Ceyron/pdequinox) for the backbone architecture
-and [neuralmag](https://gitlab.com/neuralmag/neuralmag) for the analytical
-demagnetizing field.
+Neural surrogate for **Landau–Lifshitz–Gilbert (LLG) magnetization dynamics** of a thin
+film. Learns a one-step map `m_t -> m_{t+1}` on a 256×256 spin grid, conditioned on a
+constant applied field `H_ext`, then unrolls it autoregressively to emulate full
+trajectories produced by a micromagnetic solver.
 
-After each major change, update this file.
+JAX + Equinox. GPU (CUDA 12), Python 3.13, managed with `uv`.
 
-## Stack
-
-- JAX (`jax[cuda13]`), Equinox, Optax, jaxtyping, einops, matplotlib, tqdm.
-- `pdequinox` supplies the `ClassicResNet` backbone; `neuralmag` (jax backend)
-  computes the demag field.
-- `grain` is used for dataloading.
-- Python >= 3.13, managed with `uv`. `src/` layout package (hatchling); run
-  `uv sync` once, then scripts via `uv run scripts/train.py` etc.
-- Each script calls `jax_setup.configure_jax()` at import to persist the JIT
-  compilation cache to `.jax_cache/`. The scripts no longer pin a GPU — set
-  `CUDA_VISIBLE_DEVICES` in the environment to target a specific device (the
-  old `config.DEVICE` constant has been removed).
-
-## Data
-
-External, not in this repo. Lives in a sibling repo at
-`../micromagnetic-data/data/dynamics/<size>/{train,val}` (size `small` or
-`med`; `config.DATA_ROOT`/`config.dataset_dir`), plus a `sp4/sample_0`
-trajectory (`config.SP4_PATH`) used for rollout eval/animation. One directory
-per sample (`sample_*`), each containing:
-- `m.npy` — magnetization array, shape `(T, W, H, 1, 3)`. The singleton axis
-  (a z-slice) is dropped on load and the array is rearranged to channel-first
-  `(T, 3, H, W)` float32; trajectories are 100 timesteps.
-- `params.json` — includes `H_ext` (3-vector applied field), `n`/`dx` (mesh
-  geometry), and `material.Ms` (saturation magnetization). `H_ext` is
-  nondimensionalized by dividing by `Ms`.
+> **Keep this file current.** After any change to structure, the CLI, the data
+> contract, or the known-issues list, update the relevant section here in the same
+> change. A stale CLAUDE.md is worse than none — it gets trusted.
 
 ## Layout
 
-`src/llg_emulator/` — importable library:
+```
+src/llg_emulator/
+  __init__.py       CLI + training loop (entrypoint: main)
+  config.py         DATA_ROOT + dataset_dir(split, size) path helper
+  train_config.py   TrainConfig dataclass (run hyperparameters) + sp4_path property
+  data.py           trajectory loading + grain dataloader
+  model.py          LLGEmulator (ResNet backbone + FiLM conditioning) + ModelConfig
+  physics.py        DemagField — exact demag field via neuralmag (frozen, non-trainable)
+  training.py       loss, jitted update/eval steps, train/val epoch loops
+  rollout.py        autoregressive trajectory unroll (lax.scan)
+  metrics.py        MSE, correlation, bulk magnetization
+  plotting.py       plotly (used) + matplotlib (unused) figures for wandb
+main.ipynb          scratch notebook (stale — see Issues)
+scripts/run         local single-GPU run (uv run train ...)
+scripts/run.slrm    SLURM batch script (sbatch scripts/run.slrm, via `make train`)
+```
 
-- `config.py` — constants only: `JAX_CACHE_DIR`, `DATA_ROOT`, `SIZE`,
-  `SP4_PATH`, `RESULTS_DIR`, and `dataset_dir(split, size)`.
-- `jax_setup.py` — `configure_jax()` (sets the JIT compilation cache dir).
-- `model.py` — `LLGEmulator`, the neural surrogate (a PDEquinox
-  `ClassicResNet` backbone + analytical demag input + FiLM-conditioned applied
-  field + tangent-space residual update), plus the top-level `FiLM` module.
-  Each call concatenates `m_t` (3 ch) with `h_demag = demag(m_t)` (3 ch, a
-  `physics.DemagField` submodule recomputed every call/rollout step) into the
-  backbone's 6 input channels, so the network only learns the short-range
-  terms (exchange/anisotropy) on top of the supplied long-range demag field.
-  The constant `H_ext` 3-vector drives the `FiLM` module, which emits
-  per-(point, channel) `(gamma, beta)` and modulates the hidden features after
-  the lifting layer and after every block (`n_pts = num_blocks + 1`
-  modulation points; the FiLM's final layer is zero-init ⇒ identity modulation
-  at start, so the model begins as the plain residual path). Residual
-  formulation (`step`): the backbone output `dm` is projected onto `m_t`'s
-  tangent plane (LLG keeps `|m|=1`), then `m_{t+1} = normalize(m_t + dm_perp)`.
-  The `demag` submodule has no trainable params; its tensor `demag.N` must be
-  frozen via `training.trainable_filter`.
-- `physics.py` — `DemagField` (Equinox module) wraps neuralmag's demag solver:
-  at construction it builds a neuralmag `State`/`DemagField` for the mesh
-  geometry (`n`, `dx`, `Ms`) and caches the precomputed demag tensor `N` as a
-  buffer (no trainable params); `__call__(m)` applies neuralmag's FFT `h_cell`
-  convolution. Single channel-first sample `(3, A, B)` → demag field
-  `(3, A, B)`, nondimensionalized by `Ms` by default (matching the `H_ext / Ms`
-  input convention; pass `nondim=False` for the raw A/m field).
-  `from_params(params)` builds it from a sample's params.json. jit/vmap-friendly.
-- `data.py` — dataloading. `load_metadata`/`load_trajectory` (one sample:
-  channel-first `(T, 3, H, W)` float32 trajectory + its nondimensionalized
-  `H_ext`), `load_trajectories` (reads a whole split in parallel via a thread
-  pool), `LLGStepperSource` (a `grain.RandomAccessDataSource` that flattens all
-  trajectories into consecutive `(m0, m1, H)` pairs without materializing
-  windows), and `dataloader_factory(source, batch_size, ...)` returning a
-  `seed -> grain.IterDataset` closure that shuffles, prefetches, and batches
-  with `drop_remainder=True`.
-- `rollout.py` — `rollout(stepper_fn, n, *, include_init=False)` wraps a
-  one-step autonomous `stepper_fn` into a `jax.lax.scan` unroll, and
-  `rollout_trajectory(model, m_true, H_ext, *, include_init=True)` is the
-  one-call helper (used by all three scripts) that closes over `H_ext` and
-  rolls out from `m_true[0]`.
-- `metrics.py` — `nRMSE`, `correlation`.
-- `training.py` — `count_parameters` (trainable only), `trainable_filter`
-  (bool pytree freezing the fixed `demag.N`), `loss_fn` (one-step MSE, jitted,
-  the single training objective shared by train + evaluate), `update_fn`
-  (partitions out the frozen demag tensor before the grad step; jitted with
-  donation), `train_epoch`, `val_epoch`.
-- `experiment.py` — `TrainConfig` (`seed`, `epochs`, `checkpoint_every` +
-  nested `model`/`data`/`optim`/`wandb`) with typed dataclasses: `ModelConfig`
-  (`hidden_channels`, `num_blocks`, `activation`, plus the demag mesh geometry
-  `mesh_n`/`mesh_dx`/`demag_p`, defaulting to the 256×256×1 film so the demag
-  tensor reconstructs exactly on reload), `DataConfig` (`size`, `batch_size`,
-  `viz_sample`), `OptimConfig` (`name`, `lr`), `WandbConfig` (`project`,
-  `entity`, `mode` [online|offline|disabled, default online], optional run
-  `name` — `None` ⇒ wandb's auto-generated name). `from_toml`/`from_dict`
-  (stdlib `tomllib`; unknown keys raise; `from_dict(run.config)` reconstructs a
-  config from a wandb run), and `build_activation`/`build_optimizer`
-  str→callable maps. Config is no longer written to disk — it lives in the
-  wandb run config (`asdict(cfg)`).
-- `checkpoint.py` — `load_model(key, weights_path, model_config)` (rebuilds the
-  exact architecture from a `ModelConfig`, defaulting to `ModelConfig()`).
-- `wandb_io.py` — cloud lookup/download shared by evaluate/animate:
-  `model_artifact_name(run_id)` (`model-<id>`), `find_run(name, project,
-  entity)` (resolves a run by display name via `wandb.Api`, errors if absent or
-  ambiguous), and `download_model_dir(run)` (fetches the run's `:latest` model
-  artifact to a local cache dir).
-- `plotting.py` — `plot_m_means`, `plot_learning_curve`, `plot_rollout_metric`.
+## How it works
 
-`scripts/` — entrypoints (`uv run scripts/<x>.py`), each calls
-`configure_jax()` at import:
+**Model** (`model.py`) — `LLGEmulator.__call__(m0, H)`:
+1. `demag(m0)` computes the long-range magnetostatic field exactly (physics, not learned).
+2. `[m0, demag(m0)]` (6 channels) feeds a `pdequinox` `ClassicResNet` (Neumann boundary).
+3. FiLM conditioning: `H_ext` (3-vec) → per-(stage, channel) `(gamma, beta)`, applied after
+   lifting and after every block. Zero-initialised final layer ⇒ identity modulation at start.
+4. `step()` predicts residual `dm`, projects it into the tangent space (⊥ to `m`), adds, renormalises.
+   Output is always a unit-norm field.
 
-Logging is **wandb-native**: training writes nothing to `results/`. Weights,
-plots, metrics, and config all live in the wandb run; runs use wandb's
-auto-generated display name (no datetime dirs). `evaluate.py`/`animate.py`
-take that display name and pull weights/config back from the cloud.
+**Physics** (`physics.py`) — `DemagField` precomputes neuralmag's demag tensor `N` once at
+construction (mesh geometry only) and applies an FFT convolution per call. Pure Equinox module,
+no learnable params; the tensor leaf is **frozen** during training (`trainable_filter` in
+`training.py`). Output is nondimensionalised by `Ms`, matching the `H_ext / Ms` input convention.
+`Ms` cancels under this nondim, so the model builds demag with `Ms=1.0`.
 
-- `train.py` — `uv run scripts/train.py --config configs/<name>.toml`
-  (default `configs/default.toml`). The TOML fully specifies the run. Stages
-  weights/plots in a `tempfile` dir, logs to Weights & Biases via
-  `wandb.init`/`wandb.log` (per-epoch `train_loss`/`val_loss`, epoch-0 and
-  every-`checkpoint_every` rollout images + `weights_epoch_N.eqx`, final
-  `weights.eqx` + learning curve; param count + dataset sizes in the run
-  summary; full `asdict(cfg)` as the wandb config). All `.eqx` checkpoints +
-  the final weights are uploaded as a single `model-<run_id>` artifact
-  (`type="model"`). Defaults to `online` mode; set `mode = "offline"` in the
-  config for SLURM and `wandb sync` afterward.
-- `evaluate.py` — `uv run scripts/evaluate.py <run-name> [--project P]
-  [--entity E]`. Resolves the run by display name (`wandb_io.find_run`),
-  rebuilds the model/data from `run.config`, downloads the model artifact
-  (`weights.eqx`), computes train/val one-step MSE + sp4 rollout
-  nRMSE/correlation, then resumes the same run to log the metrics (summary) and
-  plots (`eval/*` images).
-- `animate.py` — `uv run scripts/animate.py <run-name> [--project P]
-  [--entity E]`. Downloads the run's checkpoint `weights_epoch_*.eqx`, animates
-  sp4 rollout ⟨m⟩ across them vs. a static ground truth, and logs the gif back
-  to the same run as `training_animation`.
+**Data** (`data.py`) — each sample dir has `m.npy` `(t, h, w, 1, 3)` + `params.json`. Loading
+squeezes `nz=1`, transposes to `(t, c, h, w)` float32, and normalises `H_ext` by `Ms`.
+`LLGStepperSource` flattens all trajectories into consecutive `(m_t, m_{t+1}, H)` pairs for
+one-step training. `dataloader_factory` returns a `seed -> IterDataset` closure (grain: shuffle,
+batch, host→device prefetch).
 
-Training configs live in `configs/*.toml`; copy one per experiment — the file
-is the record. `default.toml` is the 128-epoch run (`hidden_channels=64`,
-`batch_size=50`, `lr=1e-4`, `small` dataset); `full.toml` is the intended
-256-epoch `med`-dataset run (currently stale — see below).
+**Training** (`training.py`) — one-step MSE. `update_fn`/`evaluate_fn` are `filter_jit` with
+donation. Every `checkpoint_every` epochs the loop logs rollout plots (bulk magnetization vs. the
+SP4 reference at `train_config.sp4_path`, correlation-vs-step) to wandb. **Weights are not saved** —
+`checkpoint_every` only gates the eval plots, and the artifact-saving helper was removed; a run
+produces no reloadable model.
 
-## Potential issues / next steps
+## Running
 
-- `configs/full.toml` is stale and will not load: it carries `num_modes`
-  (leftover from the previous FNO backbone) under `[model]` and `warmup_steps`
-  under `[data]`, neither of which is a valid config key, so
-  `TrainConfig.from_toml` raises `ValueError` on unknown keys. Remove those
-  keys (and re-tune `hidden_channels`/`batch_size`/`lr`) before using it.
-- The training objective is one-step MSE only — there is no multi-step /
-  rollout-in-the-loop loss. The orphaned `warmup_steps` config above suggests a
-  curriculum/multi-step loss was planned but not implemented.
-- The demag mesh geometry (`ModelConfig.mesh_n`/`mesh_dx`, default 256×256×1) is
-  fixed at construction and baked into the checkpoint; the model only works at
-  that spatial resolution. Confirm the `small`/`med` datasets share it, or make
-  the mesh data-derived.
-- `diffrax` and `torch` are declared in `pyproject.toml` but not imported by
-  `src/`/`scripts/` (torch is likely transitive via neuralmag). Consider
-  pruning the direct deps.
-- There are no automated tests (`scripts/test.py` was removed).
-- `README.md` is effectively empty.
+```bash
+uv sync                    # install deps into .venv
+uv run train --epochs 64 --batch-size 20 --learning-rate 1e-5 --size small --wandb-mode disabled
+```
+
+`--epochs`, `--batch-size`, `--learning-rate` are **required**. `--size` ∈ {small, med, large}
+selects the dataset split under `DATA_ROOT`. `--hidden-channels` / `--num-blocks` set the ResNet
+architecture (wired through to `ModelConfig`); everything else on the parser has a default. See
+`scripts/run` for a working local invocation, or `make train` to submit `scripts/run.slrm` via SLURM.
+
+**Data** lives in the sibling repo `../micromagnetic-data/data/dynamics/<size>/{train,val}/`
+(path hard-coded in `config.py`). Only the `small` split is present on this machine
+(24 train / 14 val samples; each `m.npy` is `(101, 256, 256, 1, 3)`).
+
+## Conventions
+
+- **JAX/Equinox**: modules are pytrees; use `eqx.filter_jit` + `eqx.partition`/`combine` to keep
+  the frozen demag tensor out of grads. Models are written for a single sample and `vmap`-ed for
+  batches (see `loss_fn`, `rollout_trajectories`).
+- **Shapes**: fields are channel-first `(3, nx, ny)` per sample, `(b, 3, nx, ny)` batched,
+  `(t, 3, nx, ny)` for trajectories. `H_ext` is a plain `(3,)` vector.
+- **Nondimensionalisation**: all fields are in units of `Ms` (both `H_ext` input and demag output).
+- Don't launch GPU/training jobs from here — CPU tasks (import checks, data inspection) are fine.
+
+## Known issues / cleanup
+
+Real, and documented so they aren't mistaken for intent.
+
+1. **No checkpointing.** `--checkpoint-every` only gates the *eval plots*; model weights are never
+   saved and a run produces no reloadable artifact. (The `wandb_io.py` save/fetch helpers were
+   removed as dead + inconsistent — re-add a `save_weights` call in the loop if you need reload.)
+
+2. **`main.ipynb` is stale.** It calls `LLGEmulator(key=key)` (constructor now requires
+   `config=ModelConfig()`) and imports `correlation_epoch` from `llg_emulator.training` (it lives in
+   `metrics`). It errors as-is. It's scratch — regenerate or delete rather than trust it.
+
+3. **Dead code.** No callers: `metrics.nRMSE`, `plotting.plot_m_means` / `plot_learning_curve` /
+   `plot_rollout_metric` (the plotly variants are the live ones), `DemagField.from_params`. Delete
+   unless you're about to use them.
+
+4. **`ModelConfig.activation` isn't JSON-serializable.** `asdict(model_config)` (logged to wandb
+   config) contains the `gelu` function object. wandb tolerates it (stores a repr), but any code
+   that `json.dumps` the config will raise. Store the activation as a name string if you need clean
+   serialisation.

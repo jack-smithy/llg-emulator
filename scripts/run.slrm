@@ -11,4 +11,9 @@
 #SBATCH -o train.log
 #SBATCH --mail-user=jack.smith@univie.ac.at
 
-uv run scripts/train.py --config configs/default.toml
+uv run train \
+    --epochs 64 \
+    --batch-size 20 \
+    --learning-rate 0.00001 \
+    --size small \
+    --wandb-mode online 
