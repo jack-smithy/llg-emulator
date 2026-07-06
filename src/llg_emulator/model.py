@@ -1,5 +1,6 @@
 from typing import Callable
 
+from dataclasses import dataclass
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -44,6 +45,16 @@ class FiLM(eqx.Module):
         return self.l2(jax.nn.gelu(self.l1(h)))
 
 
+@dataclass
+class ModelConfig:
+    hidden_channels: int = 32
+    num_blocks: int = 4
+    activation: Callable = jax.nn.gelu
+    mesh_n: tuple = (256, 256, 1)
+    mesh_dx: tuple = (5e-9, 5e-9, 3e-9)
+    demag_p: int = 20
+
+
 class LLGEmulator(eqx.Module):
     film: FiLM
     backbone: ClassicResNet
@@ -52,12 +63,7 @@ class LLGEmulator(eqx.Module):
 
     def __init__(
         self,
-        hidden_channels: int = 32,
-        num_blocks: int = 4,
-        activation: Callable = jax.nn.gelu,
-        mesh_n: tuple = (256, 256, 1),
-        mesh_dx: tuple = (5e-9, 5e-9, 3e-9),
-        demag_p: int = 20,
+        config: ModelConfig,
         *,
         key: PRNGKeyArray,
     ):
@@ -66,22 +72,22 @@ class LLGEmulator(eqx.Module):
             num_spatial_dims=2,
             in_channels=6,  # m_t (3) + demag(m_t) (3)
             out_channels=3,
-            hidden_channels=hidden_channels,
-            num_blocks=num_blocks,
-            activation=activation,
+            hidden_channels=config.hidden_channels,
+            num_blocks=config.num_blocks,
+            activation=config.activation,
             boundary_mode="neumann",
             key=model_key,
         )
-        self.n_pts = num_blocks + 1  # post-lifting + one per block
+        self.n_pts = config.num_blocks + 1  # post-lifting + one per block
         self.film = FiLM(
             in_features=3,
-            hidden_channels=hidden_channels,
-            out_features=self.n_pts * 2 * hidden_channels,
+            hidden_channels=config.hidden_channels,
+            out_features=self.n_pts * 2 * config.hidden_channels,
             key=film_key,
         )
         # Ms cancels under the nondim (h_demag / Ms) output, so any positive
         # value gives the nondimensionalised demag field the model consumes.
-        self.demag = DemagField(mesh_n, mesh_dx, Ms=1.0, p=demag_p)
+        self.demag = DemagField(config.mesh_n, config.mesh_dx, Ms=1.0, p=config.demag_p)
 
     def step(self, m0, dm):
         # tangent-space residual: the true change is perpendicular to m

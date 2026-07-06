@@ -36,5 +36,13 @@ def rollout_trajectory(
     )(m_true[0])
 
 
-def rollout_trajectories(model, m_true, h_ext):
-    return jax.vmap(lambda m, h: rollout_trajectory(model, m, h))(m_true, h_ext)
+def rollout_trajectories(
+    model: LLGEmulator,
+    m_true,
+    H_ext,
+    *,
+    include_init: bool = True,
+):
+    return jax.vmap(
+        lambda m, h: rollout_trajectory(model, m, h, include_init=include_init)
+    )(m_true, H_ext)

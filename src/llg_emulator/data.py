@@ -7,6 +7,8 @@ import numpy as np
 from einops import rearrange
 from tqdm import tqdm
 
+from llg_emulator.train_config import TrainConfig
+
 
 def load_metadata(path: Path) -> dict:
     """Metadata json for one trajectory"""
@@ -57,20 +59,30 @@ class LLGStepperSource(grain.sources.RandomAccessDataSource):
         return len(self.index)
 
 
-def dataloader_factory(source, batch_size, num_threads: int = 4, prefetch: int = 4):
-    """Factory method for dataloaders for each batch"""
+def dataloader_factory(
+    source,
+    device,
+    config: TrainConfig,
+    shuffle=True,
+    drop_remainder=True,
+):
+    def closure(seed):
+        ds = grain.MapDataset.source(source)
 
-    def closure(seed: int) -> grain.IterDataset:
-        return (
-            grain.MapDataset.source(source)
-            .shuffle(seed=seed)
-            .to_iter_dataset(
-                grain.ReadOptions(
-                    num_threads=num_threads,
-                    prefetch_buffer_size=prefetch,
-                )
-            )
-            .batch(batch_size=batch_size, drop_remainder=True)
+        if shuffle:
+            ds = ds.shuffle(seed=seed)
+
+        ds = ds.batch(
+            batch_size=config.batch_size,
+            drop_remainder=drop_remainder,
+        ).to_iter_dataset()
+
+        ds = grain.experimental.device_put(
+            ds=ds,
+            device=device,
+            cpu_buffer_size=config.cpu_buffer_size,  # batches buffered on host
+            device_buffer_size=config.device_buffer_size,  # batches buffered on device
         )
+        return ds
 
     return closure

@@ -1,6 +1,7 @@
 import jax.numpy as jnp
 from jaxtyping import Array
-from llg_emulator.rollout import rollout_trajectories
+from llg_emulator.rollout import rollout_trajectory, rollout_trajectories
+from llg_emulator.data import load_trajectory
 
 
 def nRMSE(pred, ref) -> Array:
@@ -22,8 +23,16 @@ def MSE(pred: Array, ref: Array) -> Array:
     return jnp.mean(jnp.square(pred - ref))
 
 
-def bulk_magnetization(model, source):
+def correlation_epoch(model, source):
     m_ref = jnp.stack(source.trajs, axis=0)
     h_ext = jnp.stack(source.fields, axis=0)
-    m_pred = rollout_trajectories(m_ref, h_ext, model)
-    return jnp.mean(m_ref, axis=(-1, -2)), jnp.mean(m_pred, axis=(-1, -2))
+
+    m_pred = rollout_trajectories(model, m_ref, h_ext)
+    mean, std = correlation(m_pred, m_ref)
+    return mean, std
+
+
+def bulk_magnetization(model, path):
+    m_true, H_ext = load_trajectory(path)
+    m_pred = rollout_trajectory(model, m_true, H_ext, include_init=True)
+    return jnp.mean(m_true, axis=(2, 3)), jnp.mean(m_pred, axis=(2, 3))

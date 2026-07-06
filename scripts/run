@@ -1,0 +1,6 @@
+CUDA_VISIBLE_DEVICES=0 uv run train \
+    --epochs 64 \
+    --batch-size 20 \
+    --learning-rate 0.00001 \
+    --size small \
+    --wandb-mode disabled 
