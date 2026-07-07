@@ -44,7 +44,7 @@ def _parse_args():
     parser.add_argument("--epochs", type=int, required=True)
     parser.add_argument("--batch-size", type=int, required=True)
     parser.add_argument("--learning-rate", type=float, required=True)
-    parser.add_argument("--size", type=str, default="large")
+    parser.add_argument("--size", type=str, default="small")
     parser.add_argument("--hidden-channels", type=int, default=32)
     parser.add_argument("--num-blocks", type=int, default=4)
     parser.add_argument(
