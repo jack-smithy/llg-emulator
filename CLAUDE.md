@@ -15,25 +15,22 @@ JAX + Equinox. GPU (CUDA 12), Python 3.13, managed with `uv`.
 
 ```
 src/llg_emulator/
-  __init__.py       CLI + training loop (entrypoint: main)
+  __init__.py       CLI + training loop (entrypoint: main) — winning recipe, saves best-SP4 ckpt
   config.py         DATA_ROOT + dataset_dir(split, size) path helper
   train_config.py   TrainConfig dataclass (run hyperparameters) + sp4_path property
   data.py           trajectory loading + grain dataloader
   model.py          LLGEmulator (ResNet backbone + FiLM conditioning) + ModelConfig
   physics.py        DemagField — exact demag field via neuralmag (frozen, non-trainable)
-  training.py       loss, jitted update/eval steps, train/val epoch loops
+  training.py       rollout-k loss + jitted update, RolloutSource, cosine sched, save/load, SP4 ckpt metric
   rollout.py        autoregressive trajectory unroll (lax.scan)
   metrics.py        MSE, correlation, bulk magnetization
   plotting.py       plotly (used) + matplotlib (unused) figures for wandb
-  train_bench.py    trainer with weight-saving, cosine schedule, rollout-k loss + aug (best recipe)
-  bench.py          eval harness: save/load model, SP4 rollout + val metrics -> BENCHMARKS.md
   symmetry.py       D4xZ2 symmetry group (exact augmentation), demag-equivariance self-check
 main.ipynb          scratch notebook (stale — see Issues)
 weights/            saved models: best.eqx (winner) + hc64_160.eqx, each with a .json sidecar
-scripts/run         local run: auto-picks lowest-mem GPU, trains winning recipe (train_bench)
-scripts/eval        eval saved weights on SP4+val, append a BENCHMARKS.md row
+scripts/run         local run: auto-picks lowest-mem GPU, trains winning recipe (uv run train)
 scripts/run.slrm    SLURM batch script (sbatch scripts/run.slrm, via `make train`)
-BENCHMARKS.md       readable results table (one row per run); winner marked
+BENCHMARKS.md       readable results table (one row per sweep run); winner marked
 ```
 
 ## How it works
@@ -58,35 +55,37 @@ squeezes `nz=1`, transposes to `(t, c, h, w)` float32, and normalises `H_ext` by
 one-step training. `dataloader_factory` returns a `seed -> IterDataset` closure (grain: shuffle,
 batch, host→device prefetch).
 
-**Training** (`training.py`) — one-step MSE. `update_fn`/`evaluate_fn` are `filter_jit` with
-donation. Every `checkpoint_every` epochs the loop logs rollout plots (bulk magnetization vs. the
-SP4 reference at `train_config.sp4_path`, correlation-vs-step) to wandb. **Weights are not saved** —
-`checkpoint_every` only gates the eval plots, and the artifact-saving helper was removed; a run
-produces no reloadable model.
+**Training** (`training.py` + `__init__.py`) — the objective is a **k-step rollout MSE**
+(`rollout_loss_fn`): the model is unrolled on its own predictions for `k` steps and every
+intermediate frame is matched, so the gradient sees the compounding error one-step training
+ignores (k=1 recovers plain one-step MSE). `update_fn` is `filter_jit` with donation; the
+optimiser is `clip_by_global_norm` + `adamw` on a warmup+cosine schedule (`make_schedule`).
+Train data comes from `RolloutSource` (length-(k+1) windows, optional D4×Z₂ augmentation); val is
+one-step MSE on `LLGStepperSource`. Every `checkpoint_every` epochs the loop logs rollout plots +
+correlation to wandb, computes `sp4_rollout_rmse`, and **saves the best-SP4 checkpoint** to
+`--out` (via `save_model`: `eqx.tree_serialise_leaves` + a `.json` arch sidecar; reload with
+`load_model`).
 
 ## Running
 
-Two training paths:
+Single pipeline — `uv run train` (entrypoint `main` in `__init__.py`). Trains the winning recipe,
+logs to wandb, and saves the best-SP4-rollout checkpoint to `--out`.
 
-**Best recipe** (`train_bench.py`) — saves weights, no wandb. This is what `scripts/run` calls.
 ```bash
 uv sync
-scripts/run                       # auto-picks lowest-mem GPU, trains winner -> weights/best.eqx
-scripts/eval weights/best.eqx best  # SP4 + val metrics -> BENCHMARKS.md
+scripts/run          # auto-picks lowest-mem GPU, trains winner -> weights/best.eqx
 ```
-Direct: `uv run python -m llg_emulator.train_bench --out weights/best.eqx --epochs 60
---batch-size 8 --learning-rate 3e-4 --rollout-k 4 --cosine --weight-decay 1e-5 --grad-clip 1.0
---eval-every 5 --hidden-channels 64`. Flags: `--rollout-k K` trains on a K-step unroll
-(K=1 = one-step MSE); `--cosine` warmup+cosine schedule; `--augment` D4×Z₂ symmetry aug (16×,
-CPU-bound, didn't help — see Findings); `--eval-every N` runs an SP4 rollout every N epochs and
-**keeps the best-rollout checkpoint** (not the last). Always run on the lowest-memory GPU via
-`CUDA_VISIBLE_DEVICES` (`scripts/run` does this automatically).
+Direct: `uv run train --epochs 60 --batch-size 8 --learning-rate 3e-4 --rollout-k 4 --cosine
+--weight-decay 1e-5 --grad-clip 1.0 --hidden-channels 64 --checkpoint-every 5 --out weights/best.eqx
+--wandb-mode disabled`. Flags: `--rollout-k K` trains on a K-step unroll (K=1 = one-step MSE);
+`--cosine` warmup+cosine schedule; `--augment` D4×Z₂ symmetry aug (16×, CPU-bound, didn't help —
+see Findings); `--checkpoint-every N` runs the SP4 rollout eval every N epochs and **keeps the
+best-rollout checkpoint** (not the last). Recipe defaults (hidden 64, rollout-k 4, wd/clip) are the
+sweep winner; `--epochs`, `--batch-size`, `--learning-rate` are required. `--size` ∈ {small, med,
+large}. Always run on the lowest-memory GPU via `CUDA_VISIBLE_DEVICES` (`scripts/run` does this).
 
-**wandb sweep entrypoint** (`__init__.py`, `uv run train`) — original loop, logs to wandb,
-**still saves no weights** (unchanged; see Issues). Use `train_bench.py` when you need a
-reloadable model.
-
-`--epochs`, `--batch-size`, `--learning-rate` are required on both. `--size` ∈ {small, med, large}.
+To reload + evaluate a saved model: `training.load_model(path)` then
+`training.sp4_rollout_rmse(model, sp4_path)`.
 
 ### Best recipe & results (SP4)
 
@@ -133,10 +132,9 @@ at `.../small/sp4/sample_0` (`train_config.sp4_path`).
 
 Real, and documented so they aren't mistaken for intent.
 
-1. **No checkpointing in the `uv run train` (wandb) loop.** `--checkpoint-every` only gates the
-   *eval plots* there; that entrypoint still saves no weights. Use `train_bench.py` instead — it
-   saves via `bench.save_model` (`eqx.tree_serialise_leaves` + a `.json` arch sidecar) and
-   best-checkpoints on SP4 rollout. To add reload to the wandb loop, call `bench.save_model` in it.
+1. *(resolved)* Checkpointing now works: the `uv run train` loop best-checkpoints on SP4 rollout
+   via `training.save_model` and writes `--out` (+ a `.json` arch sidecar). `--checkpoint-every`
+   gates both the eval plots and the checkpoint save.
 
 2. **`main.ipynb` is stale.** It calls `LLGEmulator(key=key)` (constructor now requires
    `config=ModelConfig()`) and imports `correlation_epoch` from `llg_emulator.training` (it lives in

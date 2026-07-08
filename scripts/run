@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Train the SP4 emulator with the best recipe found in the sweep (see BENCHMARKS.md).
-# Winner: hidden_channels=64 + rollout-k4 loss + cosine schedule, best-checkpointed
-# on SP4 rollout RMSE. Reaches sp4_bulk_rmse ~0.037 (baseline was 0.81).
+# Train the SP4 emulator with the best recipe found in the sweep (see BENCHMARKS.md):
+# hidden_channels=64 + rollout-k4 loss + cosine schedule, best-checkpointed on SP4
+# rollout RMSE. Reaches sp4_bulk_rmse ~0.037 (baseline was 0.81).
 #
 # Picks the GPU with the most free memory automatically.
 set -euo pipefail
@@ -11,8 +11,7 @@ GPU=$(nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits \
       | sort -t, -k2 -n | head -1 | cut -d, -f1 | tr -d ' ')
 echo "using GPU $GPU (lowest memory)"
 
-CUDA_VISIBLE_DEVICES=$GPU uv run python -m llg_emulator.train_bench \
-    --out weights/best.eqx --tag run \
+CUDA_VISIBLE_DEVICES=$GPU uv run train \
     --epochs 60 \
     --batch-size 8 \
     --learning-rate 3e-4 \
@@ -20,7 +19,9 @@ CUDA_VISIBLE_DEVICES=$GPU uv run python -m llg_emulator.train_bench \
     --cosine \
     --weight-decay 1e-5 \
     --grad-clip 1.0 \
-    --eval-every 5 \
     --hidden-channels 64 \
     --num-blocks 4 \
-    --size small
+    --checkpoint-every 5 \
+    --out weights/best.eqx \
+    --size small \
+    --wandb-mode disabled
