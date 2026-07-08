@@ -1,9 +1,11 @@
 # llg-emulator
 
 Neural surrogate for **Landau–Lifshitz–Gilbert (LLG) magnetization dynamics** of a thin
-film. Learns a one-step map `m_t -> m_{t+1}` on a 256×256 spin grid, conditioned on a
-constant applied field `H_ext`, then unrolls it autoregressively to emulate full
-trajectories produced by a micromagnetic solver.
+film. Learns a step map `m_t -> m_{t+Δt}` on a 256×256 spin grid, conditioned on a
+constant applied field `H_ext` **and the step size Δt**, then unrolls it autoregressively
+to emulate full trajectories produced by a micromagnetic solver. Conditioning on Δt lets
+the model take steps much larger than the 10 ps solver step (predict `m_t -> m_{t+k·dt}`
+for k = 1, 2, 3, … in one call).
 
 JAX + Equinox. GPU (CUDA 12), Python 3.13, managed with `uv`.
 
@@ -27,7 +29,8 @@ src/llg_emulator/
   plotting.py       plotly (used) + matplotlib (unused) figures for wandb
   symmetry.py       D4xZ2 symmetry group (exact augmentation), demag-equivariance self-check
 main.ipynb          scratch notebook (stale — see Issues)
-weights/            saved models: best.eqx (winner) + hc64_160.eqx, each with a .json sidecar
+weights/            saved models: best.eqx (fixed-dt winner) + hc64_160.eqx; best_dt.eqx
+                    (timestep-conditioned, from scripts/run). Each has a .json sidecar (arch + cond_dim)
 scripts/run         local run: auto-picks lowest-mem GPU, trains winning recipe (uv run train)
 scripts/run.slrm    SLURM batch script (sbatch scripts/run.slrm, via `make train`)
 BENCHMARKS.md       readable results table (one row per sweep run); winner marked
@@ -38,10 +41,13 @@ BENCHMARKS.md       readable results table (one row per sweep run); winner marke
 **Model** (`model.py`) — `LLGEmulator.__call__(m0, H)`:
 1. `demag(m0)` computes the long-range magnetostatic field exactly (physics, not learned).
 2. `[m0, demag(m0)]` (6 channels) feeds a `pdequinox` `ClassicResNet` (Neumann boundary).
-3. FiLM conditioning: `H_ext` (3-vec) → per-(stage, channel) `(gamma, beta)`, applied after
+3. FiLM conditioning: the conditioning vector → per-(stage, channel) `(gamma, beta)`, applied after
    lifting and after every block. Zero-initialised final layer ⇒ identity modulation at start.
+   The vector is `H_ext` (3) when `ModelConfig.cond_dim==3` (original fixed-dt model), or
+   `[H_ext, s_enc]` (4) when `cond_dim==4` — `s_enc = log2(stride)` is the **step-size input**
+   (stride in base 10 ps steps; `Δt = stride·dt`). `__call__(m0, H, s_enc=0)` defaults to stride 1.
 4. `step()` predicts residual `dm`, projects it into the tangent space (⊥ to `m`), adds, renormalises.
-   Output is always a unit-norm field.
+   Output is always a unit-norm field. (Geometric, so it handles the larger `|dm|` of a big jump.)
 
 **Physics** (`physics.py`) — `DemagField` precomputes neuralmag's demag tensor `N` once at
 construction (mesh geometry only) and applies an FFT convolution per call. Pure Equinox module,
@@ -49,50 +55,75 @@ no learnable params; the tensor leaf is **frozen** during training (`trainable_f
 `training.py`). Output is nondimensionalised by `Ms`, matching the `H_ext / Ms` input convention.
 `Ms` cancels under this nondim, so the model builds demag with `Ms=1.0`.
 
-**Data** (`data.py`) — each sample dir has `m.npy` `(t, h, w, 1, 3)` + `params.json`. Loading
-squeezes `nz=1`, transposes to `(t, c, h, w)` float32, and normalises `H_ext` by `Ms`.
-`LLGStepperSource` flattens all trajectories into consecutive `(m_t, m_{t+1}, H)` pairs for
-one-step training. `dataloader_factory` returns a `seed -> IterDataset` closure (grain: shuffle,
-batch, host→device prefetch).
+**Data** (`data.py`) — each sample dir has `m.npy` `(t, h, w, 1, 3)` + `params.json`. Frames are
+uniformly spaced at one solver step `dt` (10 ps): 101 frames over 1 ns. `_frames_to_cf` squeezes
+`nz=1`, transposes to `(t, c, h, w)` float32; `H_ext` is normalised by `Ms`.
 
-**Training** (`training.py` + `__init__.py`) — the objective is a **k-step rollout MSE**
-(`rollout_loss_fn`): the model is unrolled on its own predictions for `k` steps and every
-intermediate frame is matched, so the gradient sees the compounding error one-step training
-ignores (k=1 recovers plain one-step MSE). `update_fn` is `filter_jit` with donation; the
-optimiser is `clip_by_global_norm` + `adamw` on a warmup+cosine schedule (`make_schedule`).
-Train data comes from `RolloutSource` (length-(k+1) windows, optional D4×Z₂ augmentation); val is
-one-step MSE on `LLGStepperSource`. Every `checkpoint_every` epochs the loop logs rollout plots +
-correlation to wandb, computes `sp4_rollout_rmse`, and **saves the best-SP4 checkpoint** to
-`--out` (via `save_model`: `eqx.tree_serialise_leaves` + a `.json` arch sidecar; reload with
-`load_model`).
+**Streaming** — the training sources do **not** load `m.npy` into RAM. `TrajectoryStore` reads only
+each `params.json` (H, dt) and the `m.npy` *header* (frame count) at construction, then
+**memory-maps** files and slices just the frames a sample needs on `__getitem__` (handles cached per
+file; the grain pipeline is thread-based, so a shared cache is safe). Host memory stays O(index + a
+few live frames) — constructing a source is ~1 MB regardless of dataset size, vs ~79 MB/trajectory
+if fully loaded. This is what lets training scale past RAM (the old eager loader OOM'd on the large
+dataset). `LLGStepperSource` streams consecutive `(m_t, m_{t+1}, H, s_enc=0)` one-step pairs (val);
+`RolloutSource` streams strided rollout windows (train). `load_trajectory` still eagerly loads one
+*full* trajectory — used only for single-trajectory eval (SP4/bulk rollout), where that's correct.
+`correlation_epoch` streams one val trajectory at a time (no stacking the whole set).
+`dataloader_factory` returns a `seed -> IterDataset` closure (grain: shuffle indices lazily, batch,
+bounded host→device prefetch via `cpu_buffer_size`/`device_buffer_size`; it stacks each dict key, so
+`s_enc` batches to `(b,)`).
+
+**Training** (`training.py` + `__init__.py`) — two nested notions of step (don't conflate):
+- **stride `s`** — the physical jump `Δt = s·dt`; the model predicts `m_t -> m_{t+s}` in one call
+  and is conditioned on `s_enc = log2(s)`. `--strides` is the set trained on (default `1 2 4 8`).
+- **rollout-K** (`--rollout-k`, default 4) — how many autoregressive steps the *loss* unrolls.
+
+Objective: a **K-step rollout MSE over strided windows** (`rollout_loss_fn` + `RolloutSource`,
+window `trj[t : t+K·s+1 : s]`), so the unroll is over the big-step map — every intermediate frame
+matched, gradient sees compounding error (K=1 = single big-step MSE). `update_fn` is `filter_jit`
+with donation; optimiser is `clip_by_global_norm` + `adamw` on a warmup+cosine schedule
+(`make_schedule`); optional D4×Z₂ augmentation. Val is one-step MSE on `LLGStepperSource`. Every
+`checkpoint_every` epochs the loop logs rollout plots + correlation, computes
+`sp4_rollout_rmse(stride=1)` (the checkpoint metric) plus big-step `sp4_bulk_rmse@{5,10}`, and
+**saves the best-SP4 checkpoint** to `--out` (`save_model`: `eqx.tree_serialise_leaves` + a `.json`
+arch sidecar storing `cond_dim`; reload with `load_model`, which defaults `cond_dim=3` for
+pre-timestep checkpoints).
 
 ## Running
 
-Single pipeline — `uv run train` (entrypoint `main` in `__init__.py`). Trains the winning recipe,
-logs to wandb, and saves the best-SP4-rollout checkpoint to `--out`.
+Single pipeline — `uv run train` (entrypoint `main` in `__init__.py`). Trains the winning recipe
+(now timestep-conditioned), logs to wandb, saves the best-SP4-rollout checkpoint to `--out`.
 
 ```bash
 uv sync
-scripts/run          # auto-picks lowest-mem GPU, trains winner -> weights/best.eqx
+scripts/run          # auto-picks lowest-mem GPU, trains dt-model -> weights/best_dt.eqx
 ```
-Direct: `uv run train --epochs 60 --batch-size 8 --learning-rate 3e-4 --rollout-k 4 --cosine
---weight-decay 1e-5 --grad-clip 1.0 --hidden-channels 64 --checkpoint-every 5 --out weights/best.eqx
---wandb-mode disabled`. Flags: `--rollout-k K` trains on a K-step unroll (K=1 = one-step MSE);
-`--cosine` warmup+cosine schedule; `--augment` D4×Z₂ symmetry aug (16×, CPU-bound, didn't help —
-see Findings); `--checkpoint-every N` runs the SP4 rollout eval every N epochs and **keeps the
-best-rollout checkpoint** (not the last). Recipe defaults (hidden 64, rollout-k 4, wd/clip) are the
-sweep winner; `--epochs`, `--batch-size`, `--learning-rate` are required. `--size` ∈ {small, med,
-large}. Always run on the lowest-memory GPU via `CUDA_VISIBLE_DEVICES` (`scripts/run` does this).
+Direct: `uv run train --epochs 60 --batch-size 8 --learning-rate 3e-4 --rollout-k 4
+--strides 1 2 4 8 --cosine --weight-decay 1e-5 --grad-clip 1.0 --hidden-channels 64
+--checkpoint-every 5 --out weights/best_dt.eqx --wandb-mode disabled`. Flags:
+`--strides S…` step sizes trained on (predict `m_t -> m_{t+s·dt}`, conditioned on `s`; use
+`--strides 1` for the original fixed-dt map); `--rollout-k K` unroll length in the loss (K=1 =
+single big-step MSE); `--cosine` warmup+cosine schedule; `--augment` D4×Z₂ symmetry aug (16×,
+CPU-bound, didn't help — see Findings); `--checkpoint-every N` runs the SP4 rollout eval every N
+epochs and **keeps the best-rollout checkpoint** (not the last). Recipe defaults (hidden 64,
+rollout-k 4, wd/clip) are the sweep winner; `--epochs`, `--batch-size`, `--learning-rate` are
+required. `--size` ∈ {small, med, large}. Always run on the lowest-memory GPU via
+`CUDA_VISIBLE_DEVICES` (`scripts/run` does this).
 
-To reload + evaluate a saved model: `training.load_model(path)` then
-`training.sp4_rollout_rmse(model, sp4_path)`.
+To reload + evaluate a saved model: `training.load_model(path)`, then
+`training.sp4_rollout_rmse(model, sp4_path, stride=s)` — `stride=1` is the 10 ps rollout;
+larger `stride` takes big `s·10` ps steps (the point of timestep conditioning). `load_model`
+reads `cond_dim` from the sidecar, so the pre-timestep `weights/best.eqx` (no `cond_dim`) still
+loads as the fixed-dt baseline (0.037).
 
 ### Best recipe & results (SP4)
 
-Sweep results are in `BENCHMARKS.md`. Headline metric: `sp4_bulk_rmse`, the RMSE of the bulk
-magnetization ⟨m⟩(t) over a 100-step autoregressive rollout vs. the SP4 reference (whose applied
-field is **out-of-distribution** — more negative Hₓ than any training sample). The SP4 switching
-frame (6) is reproduced exactly by all decent models.
+The numbers below are the **fixed-dt** sweep (stride-1 only); timestep conditioning is a separate,
+newer axis (its own eval is `sp4_bulk_rmse@{5,10}` — big-step rollout). Sweep results are in
+`BENCHMARKS.md`. Headline metric: `sp4_bulk_rmse`, the RMSE of the bulk magnetization ⟨m⟩(t) over a
+100-step autoregressive rollout vs. the SP4 reference (whose applied field is **out-of-distribution**
+— more negative Hₓ than any training sample). The SP4 switching frame (6) is reproduced exactly by
+all decent models.
 
 - **Winner** (`weights/best.eqx`): hidden 64, num_blocks 4, **rollout-k4 loss**, cosine schedule,
   lr 3e-4, wd 1e-5, grad-clip 1, best-checkpointed on SP4 rollout. **sp4_bulk_rmse 0.037**,

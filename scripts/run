@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Train the SP4 emulator with the best recipe found in the sweep (see BENCHMARKS.md):
-# hidden_channels=64 + rollout-k4 loss + cosine schedule, best-checkpointed on SP4
-# rollout RMSE. Reaches sp4_bulk_rmse ~0.037 (baseline was 0.81).
+# Train the timestep-conditioned SP4 emulator: the sweep-winning recipe
+# (hidden 64 + rollout-k4 loss + cosine, best-checkpointed on SP4 rollout RMSE),
+# now conditioned on step size and trained over strides {1,2,4,8} so it can take
+# big Δt jumps. Saves to weights/best_dt.eqx (weights/best.eqx is the fixed-dt
+# baseline). For the original fixed-dt map, add `--strides 1`.
 #
 # Picks the GPU with the most free memory automatically.
 set -euo pipefail
@@ -16,12 +18,13 @@ CUDA_VISIBLE_DEVICES=$GPU uv run train \
     --batch-size 8 \
     --learning-rate 3e-4 \
     --rollout-k 4 \
+    --strides 1 2 4 8 \
     --cosine \
     --weight-decay 1e-5 \
     --grad-clip 1.0 \
     --hidden-channels 64 \
     --num-blocks 4 \
     --checkpoint-every 5 \
-    --out weights/best.eqx \
+    --out weights/best_dt.eqx \
     --size small \
-    --wandb-mode disabled
+    --wandb-mode online

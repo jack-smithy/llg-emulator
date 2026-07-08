@@ -50,11 +50,19 @@ def _parse_args():
     parser.add_argument("--num-blocks", type=int, default=4)
     # winning recipe knobs (see BENCHMARKS.md / CLAUDE.md)
     parser.add_argument("--rollout-k", type=int, default=4, help="unroll length in loss")
+    parser.add_argument(
+        "--strides",
+        type=int,
+        nargs="+",
+        default=[1, 2, 4, 8],
+        help="step sizes to train on (predict m_t -> m_{t+stride*dt}); "
+        "the model is conditioned on the step size. Use [1] for the fixed-dt map.",
+    )
     parser.add_argument("--cosine", action="store_true", help="warmup+cosine schedule")
     parser.add_argument("--weight-decay", type=float, default=1e-5)
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--augment", action="store_true", help="D4xZ2 symmetry aug (16x)")
-    parser.add_argument("--out", type=str, default="weights/best.eqx",
+    parser.add_argument("--out", type=str, default="weights/best_dt.eqx",
                         help="where to save the best-SP4-rollout checkpoint")
     parser.add_argument(
         "--wandb-mode", type=str, choices=("online", "disabled"), default="online"
@@ -73,6 +81,7 @@ def main():
     model_config = ModelConfig(
         hidden_channels=args.hidden_channels,
         num_blocks=args.num_blocks,
+        cond_dim=4,  # H_ext (3) + log step-size (1): timestep-conditioned
     )
     train_config = TrainConfig(
         learning_rate=args.learning_rate,
@@ -92,10 +101,14 @@ def main():
 
     device = jax.devices()[0]
 
-    # train on k-step rollout windows (optionally symmetry-augmented); val is
-    # one-step (m0, m1, H) pairs for a cheap held-out signal.
+    # train on k-step rollout windows at variable stride (predict big Δt jumps),
+    # optionally symmetry-augmented; val is one-step (stride 1) pairs for a cheap
+    # held-out signal.
     train_dataset = RolloutSource(
-        dataset_dir("train", train_config.size), k=args.rollout_k, augment=args.augment
+        dataset_dir("train", train_config.size),
+        k=args.rollout_k,
+        strides=args.strides,
+        augment=args.augment,
     )
     val_dataset = LLGStepperSource(dataset_dir("val", train_config.size))
 
@@ -151,8 +164,14 @@ def main():
                 log_dict["val/corr_mean"] = corr_mean.mean().item()
                 log_dict["val/corr_final"] = corr_mean[-1].item()
 
-                rmse = sp4_rollout_rmse(model, train_config.sp4_path)
+                # stride-1 is the checkpoint metric (comparable to the fixed-dt
+                # baseline); also log big-step rollouts — the point of the feature.
+                rmse = sp4_rollout_rmse(model, train_config.sp4_path, stride=1)
                 log_dict["val/sp4_bulk_rmse"] = rmse
+                for s in (5, 10):
+                    log_dict[f"val/sp4_bulk_rmse@{s}"] = sp4_rollout_rmse(
+                        model, train_config.sp4_path, stride=s
+                    )
                 if rmse < best_rmse:
                     best_rmse = rmse
                     save_model(model, model_config, Path(args.out))

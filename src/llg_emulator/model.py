@@ -53,6 +53,9 @@ class ModelConfig:
     mesh_n: tuple = (256, 256, 1)
     mesh_dx: tuple = (5e-9, 5e-9, 3e-9)
     demag_p: int = 20
+    # FiLM conditioning width: 3 (H_ext only) or 4 (H_ext + log step-size).
+    # cond_dim=3 reproduces the original fixed-dt model; 4 is timestep-conditioned.
+    cond_dim: int = 4
 
 
 class LLGEmulator(eqx.Module):
@@ -60,6 +63,7 @@ class LLGEmulator(eqx.Module):
     backbone: ClassicResNet
     demag: DemagField
     n_pts: int = eqx.field(static=True)
+    cond_dim: int = eqx.field(static=True)
 
     def __init__(
         self,
@@ -79,8 +83,11 @@ class LLGEmulator(eqx.Module):
             key=model_key,
         )
         self.n_pts = config.num_blocks + 1  # post-lifting + one per block
+        # FiLM conditions on H_ext (3) plus, when cond_dim==4, a log step-size
+        # scalar so the model can take variable-Δt steps (see step-size arg below).
+        self.cond_dim = config.cond_dim
         self.film = FiLM(
-            in_features=3,
+            in_features=config.cond_dim,
             hidden_channels=config.hidden_channels,
             out_features=self.n_pts * 2 * config.hidden_channels,
             key=film_key,
@@ -96,8 +103,14 @@ class LLGEmulator(eqx.Module):
         m1 = m0 + dm
         return m1 / (jnp.linalg.norm(m1, axis=0, keepdims=True) + 1e-8)
 
-    def init_film(self, H):
-        g = self.film(H).reshape(self.n_pts, 2, -1)
+    def init_film(self, H, s_enc):
+        # cond_dim==3 -> field only (original fixed-dt model); 4 -> append the
+        # log step-size scalar so the modulation depends on how big a step to take.
+        if self.cond_dim == 3:
+            cond = H
+        else:
+            cond = jnp.concatenate([H, jnp.reshape(s_enc, (1,))])
+        g = self.film(cond).reshape(self.n_pts, 2, -1)
         g = g.at[:, 0, :].add(1.0)
 
         def modulate(h, i):
@@ -105,8 +118,8 @@ class LLGEmulator(eqx.Module):
 
         return modulate
 
-    def forward(self, m0, H):
-        modulate = self.init_film(H)
+    def forward(self, m0, H, s_enc):
+        modulate = self.init_film(H, s_enc)
 
         model_in = jnp.concatenate([m0, self.demag(m0)], axis=0)  # (6, nx, ny)
         h = modulate(self.backbone.lifting(model_in), 0)  # type: ignore
@@ -116,7 +129,9 @@ class LLGEmulator(eqx.Module):
 
         return dm
 
-    def __call__(self, m0: Array, H: Array) -> Array:
-        dm = self.forward(m0=m0, H=H)
+    def __call__(self, m0: Array, H: Array, s_enc: Array = jnp.float32(0.0)) -> Array:
+        """Predict m at t + (2**s_enc) base steps. s_enc = log2(stride); default
+        s_enc=0 -> stride 1 (one base dt), matching the original one-step map."""
+        dm = self.forward(m0=m0, H=H, s_enc=s_enc)
         m1 = self.step(m0=m0, dm=dm)
         return m1
