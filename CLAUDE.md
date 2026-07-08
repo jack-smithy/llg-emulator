@@ -25,9 +25,15 @@ src/llg_emulator/
   rollout.py        autoregressive trajectory unroll (lax.scan)
   metrics.py        MSE, correlation, bulk magnetization
   plotting.py       plotly (used) + matplotlib (unused) figures for wandb
+  train_bench.py    trainer with weight-saving, cosine schedule, rollout-k loss + aug (best recipe)
+  bench.py          eval harness: save/load model, SP4 rollout + val metrics -> BENCHMARKS.md
+  symmetry.py       D4xZ2 symmetry group (exact augmentation), demag-equivariance self-check
 main.ipynb          scratch notebook (stale — see Issues)
-scripts/run         local single-GPU run (uv run train ...)
+weights/            saved models: best.eqx (winner) + hc64_160.eqx, each with a .json sidecar
+scripts/run         local run: auto-picks lowest-mem GPU, trains winning recipe (train_bench)
+scripts/eval        eval saved weights on SP4+val, append a BENCHMARKS.md row
 scripts/run.slrm    SLURM batch script (sbatch scripts/run.slrm, via `make train`)
+BENCHMARKS.md       readable results table (one row per run); winner marked
 ```
 
 ## How it works
@@ -60,19 +66,58 @@ produces no reloadable model.
 
 ## Running
 
-```bash
-uv sync                    # install deps into .venv
-uv run train --epochs 64 --batch-size 20 --learning-rate 1e-5 --size small --wandb-mode disabled
-```
+Two training paths:
 
-`--epochs`, `--batch-size`, `--learning-rate` are **required**. `--size` ∈ {small, med, large}
-selects the dataset split under `DATA_ROOT`. `--hidden-channels` / `--num-blocks` set the ResNet
-architecture (wired through to `ModelConfig`); everything else on the parser has a default. See
-`scripts/run` for a working local invocation, or `make train` to submit `scripts/run.slrm` via SLURM.
+**Best recipe** (`train_bench.py`) — saves weights, no wandb. This is what `scripts/run` calls.
+```bash
+uv sync
+scripts/run                       # auto-picks lowest-mem GPU, trains winner -> weights/best.eqx
+scripts/eval weights/best.eqx best  # SP4 + val metrics -> BENCHMARKS.md
+```
+Direct: `uv run python -m llg_emulator.train_bench --out weights/best.eqx --epochs 60
+--batch-size 8 --learning-rate 3e-4 --rollout-k 4 --cosine --weight-decay 1e-5 --grad-clip 1.0
+--eval-every 5 --hidden-channels 64`. Flags: `--rollout-k K` trains on a K-step unroll
+(K=1 = one-step MSE); `--cosine` warmup+cosine schedule; `--augment` D4×Z₂ symmetry aug (16×,
+CPU-bound, didn't help — see Findings); `--eval-every N` runs an SP4 rollout every N epochs and
+**keeps the best-rollout checkpoint** (not the last). Always run on the lowest-memory GPU via
+`CUDA_VISIBLE_DEVICES` (`scripts/run` does this automatically).
+
+**wandb sweep entrypoint** (`__init__.py`, `uv run train`) — original loop, logs to wandb,
+**still saves no weights** (unchanged; see Issues). Use `train_bench.py` when you need a
+reloadable model.
+
+`--epochs`, `--batch-size`, `--learning-rate` are required on both. `--size` ∈ {small, med, large}.
+
+### Best recipe & results (SP4)
+
+Sweep results are in `BENCHMARKS.md`. Headline metric: `sp4_bulk_rmse`, the RMSE of the bulk
+magnetization ⟨m⟩(t) over a 100-step autoregressive rollout vs. the SP4 reference (whose applied
+field is **out-of-distribution** — more negative Hₓ than any training sample). The SP4 switching
+frame (6) is reproduced exactly by all decent models.
+
+- **Winner** (`weights/best.eqx`): hidden 64, num_blocks 4, **rollout-k4 loss**, cosine schedule,
+  lr 3e-4, wd 1e-5, grad-clip 1, best-checkpointed on SP4 rollout. **sp4_bulk_rmse 0.037**,
+  val_corr 0.982 (best rollout stability). Reference config was 0.81 → **~22× better**.
+- `weights/hc64_160.eqx`: same but one-step / 160 ep — marginally lower bulk RMSE (0.034) but
+  worse late-time error and rollout stability. Kept as the accuracy-optimal alternative.
+
+**Findings** (what moved SP4, from the sweep):
+1. **Training budget dominated.** The reference config (lr 1e-5, 8 ep) was badly undertrained;
+   cosine + lr 3e-4 + more epochs alone took 0.81 → 0.08.
+2. **Rollout-k4 loss** (train on a 4-step unroll, backprop through it) fixed the post-switch
+   precession and gave the most stable rollouts. k=2 was too short and *hurt* (0.14).
+3. **Capacity helps to a point:** hidden 32→64 improves; **hidden 128 overfits** the 24
+   trajectories (erratic, 0.11). Likewise **>160 epochs overfits** (240 ep = 0.046 > 160 ep 0.034).
+4. **D4×Z₂ symmetry augmentation** is physically exact (`symmetry.py` verifies demag-equivariance)
+   and 16× — but didn't beat plain training: a well-trained model already extrapolates to SP4's
+   field. Left in as a flag, not in the winning recipe.
+5. Held-out val correlation tracks sp4_bulk_rmse at **corr −0.97** across all runs → the SP4 gains
+   are genuine generalisation, not tuning to the SP4 selection metric.
 
 **Data** lives in the sibling repo `../micromagnetic-data/data/dynamics/<size>/{train,val}/`
 (path hard-coded in `config.py`). Only the `small` split is present on this machine
-(24 train / 14 val samples; each `m.npy` is `(101, 256, 256, 1, 3)`).
+(24 train / 14 val samples; each `m.npy` is `(101, 256, 256, 1, 3)`). SP4 reference trajectory is
+at `.../small/sp4/sample_0` (`train_config.sp4_path`).
 
 ## Conventions
 
@@ -88,9 +133,10 @@ architecture (wired through to `ModelConfig`); everything else on the parser has
 
 Real, and documented so they aren't mistaken for intent.
 
-1. **No checkpointing.** `--checkpoint-every` only gates the *eval plots*; model weights are never
-   saved and a run produces no reloadable artifact. (The `wandb_io.py` save/fetch helpers were
-   removed as dead + inconsistent — re-add a `save_weights` call in the loop if you need reload.)
+1. **No checkpointing in the `uv run train` (wandb) loop.** `--checkpoint-every` only gates the
+   *eval plots* there; that entrypoint still saves no weights. Use `train_bench.py` instead — it
+   saves via `bench.save_model` (`eqx.tree_serialise_leaves` + a `.json` arch sidecar) and
+   best-checkpoints on SP4 rollout. To add reload to the wandb loop, call `bench.save_model` in it.
 
 2. **`main.ipynb` is stale.** It calls `LLGEmulator(key=key)` (constructor now requires
    `config=ModelConfig()`) and imports `correlation_epoch` from `llg_emulator.training` (it lives in
