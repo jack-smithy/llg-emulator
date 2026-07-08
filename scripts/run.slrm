@@ -2,7 +2,7 @@
 #
 #SBATCH -J train_llg
 #SBATCH -n 1
-#SBATCH --time="2:00:00"
+#SBATCH --time="4:00:00"
 #SBATCH --partition=zen4_0768_h100x4
 #SBATCH --qos=zen4_0768_h100x4
 #SBATCH --mail-type=ALL
@@ -12,8 +12,16 @@
 #SBATCH --mail-user=jack.smith@univie.ac.at
 
 uv run train \
-    --epochs 64 \
-    --batch-size 20 \
-    --learning-rate 0.00001 \
-    --size small \
-    --wandb-mode online 
+    --epochs 60 \
+    --batch-size 8 \
+    --learning-rate 3e-4 \
+    --rollout-k 4 \
+    --cosine \
+    --weight-decay 1e-5 \
+    --grad-clip 1.0 \
+    --hidden-channels 64 \
+    --num-blocks 4 \
+    --checkpoint-every 10 \
+    --out weights/best.eqx \
+    --size large \
+    --wandb-mode online
