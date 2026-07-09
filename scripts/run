@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Train the timestep-conditioned SP4 emulator: the sweep-winning recipe
+# (hidden 64 + rollout-k4 loss + cosine, best-checkpointed on SP4 rollout RMSE),
+# now conditioned on step size and trained over strides {1,2,4,8} so it can take
+# big Δt jumps. Saves to weights/best_dt.eqx (weights/best.eqx is the fixed-dt
+# baseline). For the original fixed-dt map, add `--strides 1`.
+#
+# Picks the GPU with the most free memory automatically.
+# set -euo pipefail
+# cd "$(dirname "$0")/.."
+
+# GPU=$(nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits \
+#       | sort -t, -k2 -n | head -1 | cut -d, -f1 | tr -d ' ')
+# echo "using GPU $GPU (lowest memory)"
+
+CUDA_VISIBLE_DEVICES=3 uv run train \
+    --epochs 60 \
+    --batch-size 8 \
+    --learning-rate 3e-4 \
+    --cosine \
+    --weight-decay 1e-5 \
+    --grad-clip 1.0 \
+    --hidden-channels 64 \
+    --num-blocks 4 \
+    --checkpoint-every 5 \
+    --out weights/best_dt.eqx \
+    --size small \
+    --wandb-mode online

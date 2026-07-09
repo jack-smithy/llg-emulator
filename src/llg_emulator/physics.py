@@ -73,11 +73,6 @@ class DemagField(eqx.Module):
         self.nondim = nondim
         self.N = _build_demag_tensor(self.n, dx, self.Ms, p)
 
-    @classmethod
-    def from_params(cls, params: dict, **kwargs) -> "DemagField":
-        """Build from a sample's params.json dict (`n`, `dx`, `material.Ms`)."""
-        return cls(params["n"], params["dx"], params["material"]["Ms"], **kwargs)
-
     def __call__(self, m: Array) -> Array:
         # (3, A, B) -> (A, B, nz=1, 3) cell-vector layout neuralmag expects.
         nx, ny, nz = self.n

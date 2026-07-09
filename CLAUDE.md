@@ -1,163 +1,181 @@
 # llg-emulator
 
-Learn LLG (Landau–Lifshitz–Gilbert) magnetization dynamics for a permalloy-ish
-thin film. The model is a neural surrogate that maps one magnetization field +
-applied field to the next timestep, then is autoregressively rolled out to
-reproduce a full trajectory. Built on JAX / Equinox, using
-[PDEquinox](https://github.com/Ceyron/pdequinox) for the backbone architecture
-and [neuralmag](https://gitlab.com/neuralmag/neuralmag) for the analytical
-demagnetizing field.
+Neural surrogate for **Landau–Lifshitz–Gilbert (LLG) magnetization dynamics** of a thin
+film. Learns a step map `m_t -> m_{t+Δt}` on a 256×256 spin grid, conditioned on a
+constant applied field `H_ext` **and the step size Δt**, then unrolls it autoregressively
+to emulate full trajectories produced by a micromagnetic solver. Conditioning on Δt lets
+the model take steps much larger than the 10 ps solver step (predict `m_t -> m_{t+k·dt}`
+for k = 1, 2, 3, … in one call).
 
-After each major change, update this file.
+JAX + Equinox. GPU (CUDA 12), Python 3.13, managed with `uv`.
 
-## Stack
-
-- JAX (`jax[cuda13]`), Equinox, Optax, jaxtyping, einops, matplotlib, tqdm.
-- `pdequinox` supplies the `ClassicResNet` backbone; `neuralmag` (jax backend)
-  computes the demag field.
-- `grain` is used for dataloading.
-- Python >= 3.13, managed with `uv`. `src/` layout package (hatchling); run
-  `uv sync` once, then scripts via `uv run scripts/train.py` etc.
-- Each script calls `jax_setup.configure_jax()` at import to persist the JIT
-  compilation cache to `.jax_cache/`. The scripts no longer pin a GPU — set
-  `CUDA_VISIBLE_DEVICES` in the environment to target a specific device (the
-  old `config.DEVICE` constant has been removed).
-
-## Data
-
-External, not in this repo. Lives in a sibling repo at
-`../micromagnetic-data/data/dynamics/<size>/{train,val}` (size `small` or
-`med`; `config.DATA_ROOT`/`config.dataset_dir`), plus a `sp4/sample_0`
-trajectory (`config.SP4_PATH`) used for rollout eval/animation. One directory
-per sample (`sample_*`), each containing:
-- `m.npy` — magnetization array, shape `(T, W, H, 1, 3)`. The singleton axis
-  (a z-slice) is dropped on load and the array is rearranged to channel-first
-  `(T, 3, H, W)` float32; trajectories are 100 timesteps.
-- `params.json` — includes `H_ext` (3-vector applied field), `n`/`dx` (mesh
-  geometry), and `material.Ms` (saturation magnetization). `H_ext` is
-  nondimensionalized by dividing by `Ms`.
+> **Keep this file current.** After any change to structure, the CLI, the data
+> contract, or the known-issues list, update the relevant section here in the same
+> change. A stale CLAUDE.md is worse than none — it gets trusted.
 
 ## Layout
 
-`src/llg_emulator/` — importable library:
+```
+src/llg_emulator/
+  __init__.py       CLI + training loop (entrypoint: main) — winning recipe, saves best-SP4 ckpt
+  config.py         DATA_ROOT + dataset_dir(split, size) path helper
+  train_config.py   TrainConfig dataclass (run hyperparameters) + sp4_path property
+  data.py           trajectory loading + grain dataloader
+  model.py          LLGEmulator (ResNet backbone + FiLM conditioning) + ModelConfig
+  physics.py        DemagField — exact demag field via neuralmag (frozen, non-trainable)
+  training.py       rollout-k loss + jitted update, RolloutSource, cosine sched, save/load, SP4 ckpt metric
+  rollout.py        autoregressive trajectory unroll (lax.scan)
+  metrics.py        MSE, correlation, bulk magnetization
+  plotting.py       plotly (used) + matplotlib (unused) figures for wandb
+  symmetry.py       D4xZ2 symmetry group (exact augmentation), demag-equivariance self-check
+main.ipynb          scratch notebook (stale — see Issues)
+weights/            saved models: best.eqx (fixed-dt winner) + hc64_160.eqx; best_dt.eqx
+                    (timestep-conditioned, from scripts/run). Each has a .json sidecar (arch + cond_dim)
+scripts/run         local run: auto-picks lowest-mem GPU, trains winning recipe (uv run train)
+scripts/run.slrm    SLURM batch script (sbatch scripts/run.slrm, via `make train`)
+BENCHMARKS.md       readable results table (one row per sweep run); winner marked
+```
 
-- `config.py` — constants only: `JAX_CACHE_DIR`, `DATA_ROOT`, `SIZE`,
-  `SP4_PATH`, `RESULTS_DIR`, and `dataset_dir(split, size)`.
-- `jax_setup.py` — `configure_jax()` (sets the JIT compilation cache dir).
-- `model.py` — `LLGEmulator`, the neural surrogate (a PDEquinox
-  `ClassicResNet` backbone + analytical demag input + FiLM-conditioned applied
-  field + tangent-space residual update), plus the top-level `FiLM` module.
-  Each call concatenates `m_t` (3 ch) with `h_demag = demag(m_t)` (3 ch, a
-  `physics.DemagField` submodule recomputed every call/rollout step) into the
-  backbone's 6 input channels, so the network only learns the short-range
-  terms (exchange/anisotropy) on top of the supplied long-range demag field.
-  The constant `H_ext` 3-vector drives the `FiLM` module, which emits
-  per-(point, channel) `(gamma, beta)` and modulates the hidden features after
-  the lifting layer and after every block (`n_pts = num_blocks + 1`
-  modulation points; the FiLM's final layer is zero-init ⇒ identity modulation
-  at start, so the model begins as the plain residual path). Residual
-  formulation (`step`): the backbone output `dm` is projected onto `m_t`'s
-  tangent plane (LLG keeps `|m|=1`), then `m_{t+1} = normalize(m_t + dm_perp)`.
-  The `demag` submodule has no trainable params; its tensor `demag.N` must be
-  frozen via `training.trainable_filter`.
-- `physics.py` — `DemagField` (Equinox module) wraps neuralmag's demag solver:
-  at construction it builds a neuralmag `State`/`DemagField` for the mesh
-  geometry (`n`, `dx`, `Ms`) and caches the precomputed demag tensor `N` as a
-  buffer (no trainable params); `__call__(m)` applies neuralmag's FFT `h_cell`
-  convolution. Single channel-first sample `(3, A, B)` → demag field
-  `(3, A, B)`, nondimensionalized by `Ms` by default (matching the `H_ext / Ms`
-  input convention; pass `nondim=False` for the raw A/m field).
-  `from_params(params)` builds it from a sample's params.json. jit/vmap-friendly.
-- `data.py` — dataloading. `load_metadata`/`load_trajectory` (one sample:
-  channel-first `(T, 3, H, W)` float32 trajectory + its nondimensionalized
-  `H_ext`), `load_trajectories` (reads a whole split in parallel via a thread
-  pool), `LLGStepperSource` (a `grain.RandomAccessDataSource` that flattens all
-  trajectories into consecutive `(m0, m1, H)` pairs without materializing
-  windows), and `dataloader_factory(source, batch_size, ...)` returning a
-  `seed -> grain.IterDataset` closure that shuffles, prefetches, and batches
-  with `drop_remainder=True`.
-- `rollout.py` — `rollout(stepper_fn, n, *, include_init=False)` wraps a
-  one-step autonomous `stepper_fn` into a `jax.lax.scan` unroll, and
-  `rollout_trajectory(model, m_true, H_ext, *, include_init=True)` is the
-  one-call helper (used by all three scripts) that closes over `H_ext` and
-  rolls out from `m_true[0]`.
-- `metrics.py` — `nRMSE`, `correlation`.
-- `training.py` — `count_parameters` (trainable only), `trainable_filter`
-  (bool pytree freezing the fixed `demag.N`), `loss_fn` (one-step MSE, jitted,
-  the single training objective shared by train + evaluate), `update_fn`
-  (partitions out the frozen demag tensor before the grad step; jitted with
-  donation), `train_epoch`, `val_epoch`.
-- `experiment.py` — `TrainConfig` (`seed`, `epochs`, `checkpoint_every` +
-  nested `model`/`data`/`optim`/`wandb`) with typed dataclasses: `ModelConfig`
-  (`hidden_channels`, `num_blocks`, `activation`, plus the demag mesh geometry
-  `mesh_n`/`mesh_dx`/`demag_p`, defaulting to the 256×256×1 film so the demag
-  tensor reconstructs exactly on reload), `DataConfig` (`size`, `batch_size`,
-  `viz_sample`), `OptimConfig` (`name`, `lr`), `WandbConfig` (`project`,
-  `entity`, `mode` [online|offline|disabled, default online], optional run
-  `name` — `None` ⇒ wandb's auto-generated name). `from_toml`/`from_dict`
-  (stdlib `tomllib`; unknown keys raise; `from_dict(run.config)` reconstructs a
-  config from a wandb run), and `build_activation`/`build_optimizer`
-  str→callable maps. Config is no longer written to disk — it lives in the
-  wandb run config (`asdict(cfg)`).
-- `checkpoint.py` — `load_model(key, weights_path, model_config)` (rebuilds the
-  exact architecture from a `ModelConfig`, defaulting to `ModelConfig()`).
-- `wandb_io.py` — cloud lookup/download shared by evaluate/animate:
-  `model_artifact_name(run_id)` (`model-<id>`), `find_run(name, project,
-  entity)` (resolves a run by display name via `wandb.Api`, errors if absent or
-  ambiguous), and `download_model_dir(run)` (fetches the run's `:latest` model
-  artifact to a local cache dir).
-- `plotting.py` — `plot_m_means`, `plot_learning_curve`, `plot_rollout_metric`.
+## How it works
 
-`scripts/` — entrypoints (`uv run scripts/<x>.py`), each calls
-`configure_jax()` at import:
+**Model** (`model.py`) — `LLGEmulator.__call__(m0, H)`:
+1. `demag(m0)` computes the long-range magnetostatic field exactly (physics, not learned).
+2. `[m0, demag(m0)]` (6 channels) feeds a `pdequinox` `ClassicResNet` (Neumann boundary).
+3. FiLM conditioning: the conditioning vector → per-(stage, channel) `(gamma, beta)`, applied after
+   lifting and after every block. Zero-initialised final layer ⇒ identity modulation at start.
+   The vector is `H_ext` (3) when `ModelConfig.cond_dim==3` (original fixed-dt model), or
+   `[H_ext, s_enc]` (4) when `cond_dim==4` — `s_enc = log2(stride)` is the **step-size input**
+   (stride in base 10 ps steps; `Δt = stride·dt`). `__call__(m0, H, s_enc=0)` defaults to stride 1.
+4. `step()` predicts residual `dm`, projects it into the tangent space (⊥ to `m`), adds, renormalises.
+   Output is always a unit-norm field. (Geometric, so it handles the larger `|dm|` of a big jump.)
 
-Logging is **wandb-native**: training writes nothing to `results/`. Weights,
-plots, metrics, and config all live in the wandb run; runs use wandb's
-auto-generated display name (no datetime dirs). `evaluate.py`/`animate.py`
-take that display name and pull weights/config back from the cloud.
+**Physics** (`physics.py`) — `DemagField` precomputes neuralmag's demag tensor `N` once at
+construction (mesh geometry only) and applies an FFT convolution per call. Pure Equinox module,
+no learnable params; the tensor leaf is **frozen** during training (`trainable_filter` in
+`training.py`). Output is nondimensionalised by `Ms`, matching the `H_ext / Ms` input convention.
+`Ms` cancels under this nondim, so the model builds demag with `Ms=1.0`.
 
-- `train.py` — `uv run scripts/train.py --config configs/<name>.toml`
-  (default `configs/default.toml`). The TOML fully specifies the run. Stages
-  weights/plots in a `tempfile` dir, logs to Weights & Biases via
-  `wandb.init`/`wandb.log` (per-epoch `train_loss`/`val_loss`, epoch-0 and
-  every-`checkpoint_every` rollout images + `weights_epoch_N.eqx`, final
-  `weights.eqx` + learning curve; param count + dataset sizes in the run
-  summary; full `asdict(cfg)` as the wandb config). All `.eqx` checkpoints +
-  the final weights are uploaded as a single `model-<run_id>` artifact
-  (`type="model"`). Defaults to `online` mode; set `mode = "offline"` in the
-  config for SLURM and `wandb sync` afterward.
-- `evaluate.py` — `uv run scripts/evaluate.py <run-name> [--project P]
-  [--entity E]`. Resolves the run by display name (`wandb_io.find_run`),
-  rebuilds the model/data from `run.config`, downloads the model artifact
-  (`weights.eqx`), computes train/val one-step MSE + sp4 rollout
-  nRMSE/correlation, then resumes the same run to log the metrics (summary) and
-  plots (`eval/*` images).
-- `animate.py` — `uv run scripts/animate.py <run-name> [--project P]
-  [--entity E]`. Downloads the run's checkpoint `weights_epoch_*.eqx`, animates
-  sp4 rollout ⟨m⟩ across them vs. a static ground truth, and logs the gif back
-  to the same run as `training_animation`.
+**Data** (`data.py`) — each sample dir has `m.npy` `(t, h, w, 1, 3)` + `params.json`. Frames are
+uniformly spaced at one solver step `dt` (10 ps): 101 frames over 1 ns. `_frames_to_cf` squeezes
+`nz=1`, transposes to `(t, c, h, w)` float32; `H_ext` is normalised by `Ms`.
 
-Training configs live in `configs/*.toml`; copy one per experiment — the file
-is the record. `default.toml` is the 128-epoch run (`hidden_channels=64`,
-`batch_size=50`, `lr=1e-4`, `small` dataset); `full.toml` is the intended
-256-epoch `med`-dataset run (currently stale — see below).
+**Streaming** — the training sources do **not** load `m.npy` into RAM. `TrajectoryStore` reads only
+each `params.json` (H, dt) and the `m.npy` *header* (frame count) at construction, then
+**memory-maps** files and slices just the frames a sample needs on `__getitem__` (handles cached per
+file; the grain pipeline is thread-based, so a shared cache is safe). Host memory stays O(index + a
+few live frames) — constructing a source is ~1 MB regardless of dataset size, vs ~79 MB/trajectory
+if fully loaded. This is what lets training scale past RAM (the old eager loader OOM'd on the large
+dataset). `LLGStepperSource` streams consecutive `(m_t, m_{t+1}, H, s_enc=0)` one-step pairs (val);
+`RolloutSource` streams strided rollout windows (train). `load_trajectory` still eagerly loads one
+*full* trajectory — used only for single-trajectory eval (SP4/bulk rollout), where that's correct.
+`correlation_epoch` streams one val trajectory at a time (no stacking the whole set).
+`dataloader_factory` returns a `seed -> IterDataset` closure (grain: shuffle indices lazily, batch,
+bounded host→device prefetch via `cpu_buffer_size`/`device_buffer_size`; it stacks each dict key, so
+`s_enc` batches to `(b,)`).
 
-## Potential issues / next steps
+**Training** (`training.py` + `__init__.py`) — two nested notions of step (don't conflate):
+- **stride `s`** — the physical jump `Δt = s·dt`; the model predicts `m_t -> m_{t+s}` in one call
+  and is conditioned on `s_enc = log2(s)`. `--strides` is the set trained on (default `1 2 4 8`).
+- **rollout-K** (`--rollout-k`, default 4) — how many autoregressive steps the *loss* unrolls.
 
-- `configs/full.toml` is stale and will not load: it carries `num_modes`
-  (leftover from the previous FNO backbone) under `[model]` and `warmup_steps`
-  under `[data]`, neither of which is a valid config key, so
-  `TrainConfig.from_toml` raises `ValueError` on unknown keys. Remove those
-  keys (and re-tune `hidden_channels`/`batch_size`/`lr`) before using it.
-- The training objective is one-step MSE only — there is no multi-step /
-  rollout-in-the-loop loss. The orphaned `warmup_steps` config above suggests a
-  curriculum/multi-step loss was planned but not implemented.
-- The demag mesh geometry (`ModelConfig.mesh_n`/`mesh_dx`, default 256×256×1) is
-  fixed at construction and baked into the checkpoint; the model only works at
-  that spatial resolution. Confirm the `small`/`med` datasets share it, or make
-  the mesh data-derived.
-- `diffrax` and `torch` are declared in `pyproject.toml` but not imported by
-  `src/`/`scripts/` (torch is likely transitive via neuralmag). Consider
-  pruning the direct deps.
-- There are no automated tests (`scripts/test.py` was removed).
-- `README.md` is effectively empty.
+Objective: a **K-step rollout MSE over strided windows** (`rollout_loss_fn` + `RolloutSource`,
+window `trj[t : t+K·s+1 : s]`), so the unroll is over the big-step map — every intermediate frame
+matched, gradient sees compounding error (K=1 = single big-step MSE). `update_fn` is `filter_jit`
+with donation; optimiser is `clip_by_global_norm` + `adamw` on a warmup+cosine schedule
+(`make_schedule`); optional D4×Z₂ augmentation. Val is one-step MSE on `LLGStepperSource`. Every
+`checkpoint_every` epochs the loop logs rollout plots + correlation, computes
+`sp4_rollout_rmse(stride=1)` (the checkpoint metric) plus big-step `sp4_bulk_rmse@{5,10}`, and
+**saves the best-SP4 checkpoint** to `--out` (`save_model`: `eqx.tree_serialise_leaves` + a `.json`
+arch sidecar storing `cond_dim`; reload with `load_model`, which defaults `cond_dim=3` for
+pre-timestep checkpoints).
+
+## Running
+
+Single pipeline — `uv run train` (entrypoint `main` in `__init__.py`). Trains the winning recipe
+(now timestep-conditioned), logs to wandb, saves the best-SP4-rollout checkpoint to `--out`.
+
+```bash
+uv sync
+scripts/run          # auto-picks lowest-mem GPU, trains dt-model -> weights/best_dt.eqx
+```
+Direct: `uv run train --epochs 60 --batch-size 8 --learning-rate 3e-4 --rollout-k 4
+--strides 1 2 4 8 --cosine --weight-decay 1e-5 --grad-clip 1.0 --hidden-channels 64
+--checkpoint-every 5 --out weights/best_dt.eqx --wandb-mode disabled`. Flags:
+`--strides S…` step sizes trained on (predict `m_t -> m_{t+s·dt}`, conditioned on `s`; use
+`--strides 1` for the original fixed-dt map); `--rollout-k K` unroll length in the loss (K=1 =
+single big-step MSE); `--cosine` warmup+cosine schedule; `--augment` D4×Z₂ symmetry aug (16×,
+CPU-bound, didn't help — see Findings); `--checkpoint-every N` runs the SP4 rollout eval every N
+epochs and **keeps the best-rollout checkpoint** (not the last). Recipe defaults (hidden 64,
+rollout-k 4, wd/clip) are the sweep winner; `--epochs`, `--batch-size`, `--learning-rate` are
+required. `--size` ∈ {small, med, large}. Always run on the lowest-memory GPU via
+`CUDA_VISIBLE_DEVICES` (`scripts/run` does this).
+
+To reload + evaluate a saved model: `training.load_model(path)`, then
+`training.sp4_rollout_rmse(model, sp4_path, stride=s)` — `stride=1` is the 10 ps rollout;
+larger `stride` takes big `s·10` ps steps (the point of timestep conditioning). `load_model`
+reads `cond_dim` from the sidecar, so the pre-timestep `weights/best.eqx` (no `cond_dim`) still
+loads as the fixed-dt baseline (0.037).
+
+### Best recipe & results (SP4)
+
+The numbers below are the **fixed-dt** sweep (stride-1 only); timestep conditioning is a separate,
+newer axis (its own eval is `sp4_bulk_rmse@{5,10}` — big-step rollout). Sweep results are in
+`BENCHMARKS.md`. Headline metric: `sp4_bulk_rmse`, the RMSE of the bulk magnetization ⟨m⟩(t) over a
+100-step autoregressive rollout vs. the SP4 reference (whose applied field is **out-of-distribution**
+— more negative Hₓ than any training sample). The SP4 switching frame (6) is reproduced exactly by
+all decent models.
+
+- **Winner** (`weights/best.eqx`): hidden 64, num_blocks 4, **rollout-k4 loss**, cosine schedule,
+  lr 3e-4, wd 1e-5, grad-clip 1, best-checkpointed on SP4 rollout. **sp4_bulk_rmse 0.037**,
+  val_corr 0.982 (best rollout stability). Reference config was 0.81 → **~22× better**.
+- `weights/hc64_160.eqx`: same but one-step / 160 ep — marginally lower bulk RMSE (0.034) but
+  worse late-time error and rollout stability. Kept as the accuracy-optimal alternative.
+
+**Findings** (what moved SP4, from the sweep):
+1. **Training budget dominated.** The reference config (lr 1e-5, 8 ep) was badly undertrained;
+   cosine + lr 3e-4 + more epochs alone took 0.81 → 0.08.
+2. **Rollout-k4 loss** (train on a 4-step unroll, backprop through it) fixed the post-switch
+   precession and gave the most stable rollouts. k=2 was too short and *hurt* (0.14).
+3. **Capacity helps to a point:** hidden 32→64 improves; **hidden 128 overfits** the 24
+   trajectories (erratic, 0.11). Likewise **>160 epochs overfits** (240 ep = 0.046 > 160 ep 0.034).
+4. **D4×Z₂ symmetry augmentation** is physically exact (`symmetry.py` verifies demag-equivariance)
+   and 16× — but didn't beat plain training: a well-trained model already extrapolates to SP4's
+   field. Left in as a flag, not in the winning recipe.
+5. Held-out val correlation tracks sp4_bulk_rmse at **corr −0.97** across all runs → the SP4 gains
+   are genuine generalisation, not tuning to the SP4 selection metric.
+
+**Data** lives in the sibling repo `../micromagnetic-data/data/dynamics/<size>/{train,val}/`
+(path hard-coded in `config.py`). Only the `small` split is present on this machine
+(24 train / 14 val samples; each `m.npy` is `(101, 256, 256, 1, 3)`). SP4 reference trajectory is
+at `.../small/sp4/sample_0` (`train_config.sp4_path`).
+
+## Conventions
+
+- **JAX/Equinox**: modules are pytrees; use `eqx.filter_jit` + `eqx.partition`/`combine` to keep
+  the frozen demag tensor out of grads. Models are written for a single sample and `vmap`-ed for
+  batches (see `loss_fn`, `rollout_trajectories`).
+- **Shapes**: fields are channel-first `(3, nx, ny)` per sample, `(b, 3, nx, ny)` batched,
+  `(t, 3, nx, ny)` for trajectories. `H_ext` is a plain `(3,)` vector.
+- **Nondimensionalisation**: all fields are in units of `Ms` (both `H_ext` input and demag output).
+- Don't launch GPU/training jobs from here — CPU tasks (import checks, data inspection) are fine.
+
+## Known issues / cleanup
+
+Real, and documented so they aren't mistaken for intent.
+
+1. *(resolved)* Checkpointing now works: the `uv run train` loop best-checkpoints on SP4 rollout
+   via `training.save_model` and writes `--out` (+ a `.json` arch sidecar). `--checkpoint-every`
+   gates both the eval plots and the checkpoint save.
+
+2. **`main.ipynb` is stale.** It calls `LLGEmulator(key=key)` (constructor now requires
+   `config=ModelConfig()`) and imports `correlation_epoch` from `llg_emulator.training` (it lives in
+   `metrics`). It errors as-is. It's scratch — regenerate or delete rather than trust it.
+
+3. **Dead code.** No callers: `metrics.nRMSE`, `plotting.plot_m_means` / `plot_learning_curve` /
+   `plot_rollout_metric` (the plotly variants are the live ones), `DemagField.from_params`. Delete
+   unless you're about to use them.
+
+4. **`ModelConfig.activation` isn't JSON-serializable.** `asdict(model_config)` (logged to wandb
+   config) contains the `gelu` function object. wandb tolerates it (stores a repr), but any code
+   that `json.dumps` the config will raise. Store the activation as a name string if you need clean
+   serialisation.
