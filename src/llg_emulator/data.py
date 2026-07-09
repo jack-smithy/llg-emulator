@@ -29,8 +29,7 @@ def load_trajectory(path: Path):
     params = load_metadata(path)
     Ms = np.float32(params["material"]["Ms"])
     H = np.asarray(params["H_ext"], dtype=np.float32) / Ms
-    dt = float(params["dt"])
-    return trj, H, dt
+    return trj, H
 
 
 class TrajectoryStore:
@@ -89,11 +88,7 @@ class LLGStepperSource(grain.sources.RandomAccessDataSource):
         self.store = TrajectoryStore(path)
         # small index only: one (traj, t) per consecutive pair across trajectories
         self.index = np.array(
-            [
-                (ti, t)
-                for ti, n in enumerate(self.store.lengths)
-                for t in range(n - 1)
-            ],
+            [(ti, t) for ti, n in enumerate(self.store.lengths) for t in range(n - 1)],
             dtype=np.int64,
         )
 
@@ -101,12 +96,7 @@ class LLGStepperSource(grain.sources.RandomAccessDataSource):
         ti, t = (int(x) for x in self.index[idx])
         pair = self.store.frames(ti, slice(t, t + 2))  # (2, 3, nx, ny), one read
         # one-step pairs -> stride 1 -> s_enc = log2(1) = 0
-        return {
-            "m0": pair[0],
-            "m1": pair[1],
-            "H": self.store.fields[ti],
-            "s_enc": np.float32(0.0),
-        }
+        return {"m0": pair[0], "m1": pair[1], "H": self.store.fields[ti]}
 
     def __len__(self) -> int:
         return len(self.index)

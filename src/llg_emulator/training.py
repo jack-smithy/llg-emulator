@@ -48,7 +48,9 @@ def count_parameters(model: LLGEmulator) -> int:
 # --- rollout-k training objective --------------------------------------------
 
 
-def rollout_loss_fn(model: LLGEmulator, m_seq: Array, H: Array, s_enc: Array, k: int) -> Array:
+def rollout_loss_fn(
+    model: LLGEmulator, m_seq: Array, H: Array, s_enc: Array, k: int
+) -> Array:
     """k-step unrolled MSE for one strided trajectory window.
 
     m_seq: (k+1, 3, nx, ny) frames spaced `stride` apart (s_enc = log2(stride)).
@@ -56,6 +58,7 @@ def rollout_loss_fn(model: LLGEmulator, m_seq: Array, H: Array, s_enc: Array, k:
     every intermediate frame is matched so the gradient sees compounding error.
     k=1 == single big-step MSE.
     """
+
     def scan_fn(m, m_target):
         m_next = model(m, H, s_enc)
         return m_next, MSE(m_next, m_target)
@@ -77,7 +80,7 @@ def update_fn(model: LLGEmulator, batch: PyTree, optimizer, opt_state, k: int):
 
     def diff_loss(diff):
         m = eqx.combine(diff, static)
-        return loss_fn(m, batch["m_seq"], batch["H"], batch["s_enc"], k)
+        return loss_fn(m, batch["m"], batch["H"], batch["s_enc"], k)
 
     loss, grad = eqx.filter_value_and_grad(diff_loss)(diff)
     updates, opt_state = optimizer.update(grad, opt_state, params=diff)

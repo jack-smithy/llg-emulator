@@ -49,28 +49,32 @@ def _parse_args():
     parser.add_argument("--hidden-channels", type=int, default=64)
     parser.add_argument("--num-blocks", type=int, default=4)
     # winning recipe knobs (see BENCHMARKS.md / CLAUDE.md)
-    parser.add_argument("--rollout-k", type=int, default=4, help="unroll length in loss")
     parser.add_argument(
-        "--strides",
-        type=int,
-        nargs="+",
-        default=[1, 2, 4, 8],
-        help="step sizes to train on (predict m_t -> m_{t+stride*dt}); "
-        "the model is conditioned on the step size. Use [1] for the fixed-dt map.",
+        "--rollout-k", type=int, default=4, help="unroll length in loss"
     )
     parser.add_argument("--cosine", action="store_true", help="warmup+cosine schedule")
     parser.add_argument("--weight-decay", type=float, default=1e-5)
     parser.add_argument("--grad-clip", type=float, default=1.0)
-    parser.add_argument("--augment", action="store_true", help="D4xZ2 symmetry aug (16x)")
-    parser.add_argument("--out", type=str, default="weights/best_dt.eqx",
-                        help="where to save the best-SP4-rollout checkpoint")
+    parser.add_argument(
+        "--augment", action="store_true", help="D4xZ2 symmetry aug (16x)"
+    )
+    parser.add_argument(
+        "--out",
+        type=str,
+        default="weights/best_dt.eqx",
+        help="where to save the best-SP4-rollout checkpoint",
+    )
     parser.add_argument(
         "--wandb-mode", type=str, choices=("online", "disabled"), default="online"
     )
     parser.add_argument("--cpu-buffer-size", type=int, default=8)
     parser.add_argument("--device-buffer-size", type=int, default=4)
-    parser.add_argument("--checkpoint-every", type=int, default=5,
-                        help="epochs between SP4 rollout eval + best-checkpoint save")
+    parser.add_argument(
+        "--checkpoint-every",
+        type=int,
+        default=5,
+        help="epochs between SP4 rollout eval + best-checkpoint save",
+    )
     return parser.parse_args()
 
 
@@ -81,7 +85,7 @@ def main():
     model_config = ModelConfig(
         hidden_channels=args.hidden_channels,
         num_blocks=args.num_blocks,
-        cond_dim=4,  # H_ext (3) + log step-size (1): timestep-conditioned
+        cond_dim=3,
     )
     train_config = TrainConfig(
         learning_rate=args.learning_rate,
@@ -101,15 +105,7 @@ def main():
 
     device = jax.devices()[0]
 
-    # train on k-step rollout windows at variable stride (predict big Δt jumps),
-    # optionally symmetry-augmented; val is one-step (stride 1) pairs for a cheap
-    # held-out signal.
-    train_dataset = RolloutSource(
-        dataset_dir("train", train_config.size),
-        k=args.rollout_k,
-        strides=args.strides,
-        augment=args.augment,
-    )
+    train_dataset = LLGStepperSource(dataset_dir("train", train_config.size))
     val_dataset = LLGStepperSource(dataset_dir("val", train_config.size))
 
     train_loader = dataloader_factory(train_dataset, config=train_config, device=device)
