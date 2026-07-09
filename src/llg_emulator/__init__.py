@@ -2,19 +2,21 @@
 
 from argparse import ArgumentParser
 from dataclasses import asdict
+from pathlib import Path
 
 import equinox as eqx
 import jax
 import jax.random as jr
 import optax
+from grain.sources import ArrayRecordDataSource
 from tqdm import tqdm
 
 import wandb
 from llg_emulator.config import JAX_CACHE_DIR, dataset_dir
-from llg_emulator.data import LLGStepperSource, dataloader_factory
-from llg_emulator.metrics import bulk_magnetization, correlation_epoch
+from llg_emulator.data import LLGStepperSource, TrajectoryDataSource, dataloader_factory
+from llg_emulator.metrics import bulk_magnetization
 from llg_emulator.model import LLGEmulator, ModelConfig
-from llg_emulator.plotting import plot_corr_plotly, plot_m_means_plotly
+from llg_emulator.plotting import plot_m_means_plotly
 from llg_emulator.train_config import TrainConfig
 from llg_emulator.training import (
     count_parameters,
@@ -56,6 +58,10 @@ def _parse_args():
     return parser.parse_args()
 
 
+def get_shards(path: Path):
+    return [str(p) for p in path.glob("*.arrayrecord")]
+
+
 def main():
     args = _parse_args()
 
@@ -90,8 +96,22 @@ def main():
 
     device = jax.devices()[0]
 
-    train_dataset = LLGStepperSource(dataset_dir("train", train_config.size))
-    val_dataset = LLGStepperSource(dataset_dir("val", train_config.size))
+    train_source = ArrayRecordDataSource(
+        get_shards(dataset_dir("train", train_config.size))
+    )
+
+    val_source = ArrayRecordDataSource(
+        get_shards(dataset_dir("train", train_config.size))
+    )
+
+    sp4_source = ArrayRecordDataSource(
+        get_shards(dataset_dir("sp4", train_config.size))
+    )
+
+    train_dataset = LLGStepperSource(train_source)
+    val_dataset = LLGStepperSource(val_source)
+
+    sp4_trajectory = TrajectoryDataSource(sp4_source)
 
     train_loader = dataloader_factory(train_dataset, config=train_config, device=device)
     val_loader = dataloader_factory(val_dataset, config=train_config, device=device)
@@ -128,18 +148,16 @@ def main():
             }
 
             if i % train_config.checkpoint_every == 0:
-                m_mean_ref, m_mean_pred = bulk_magnetization(
-                    model, train_config.sp4_path
-                )
+                m_mean_ref, m_mean_pred = bulk_magnetization(model, sp4_trajectory)
                 log_dict["val/rollout"] = plot_m_means_plotly(m_mean_ref, m_mean_pred)
 
-                corr_mean, corr_std = correlation_epoch(model, val_dataset)
-                log_dict["val/corr_rollout"] = plot_corr_plotly(
-                    corr_mean=corr_mean, corr_std=corr_std
-                )
-                log_dict["val/corr_mean"] = corr_mean.mean().item()
-                log_dict["val/corr_std"] = corr_std.mean().item()
-                log_dict["val/corr_final"] = corr_mean[-1].item()
+                # corr_mean, corr_std = correlation_epoch(model, val_dataset)
+                # log_dict["val/corr_rollout"] = plot_corr_plotly(
+                #     corr_mean=corr_mean, corr_std=corr_std
+                # )
+                # log_dict["val/corr_mean"] = corr_mean.mean().item()
+                # log_dict["val/corr_std"] = corr_std.mean().item()
+                # log_dict["val/corr_final"] = corr_mean[-1].item()
 
             bar.set_description(f"loss={val_loss:.4e}")
             wandb.log(
@@ -150,7 +168,7 @@ def main():
     wandb.log(
         {
             "val/rollout": plot_m_means_plotly(
-                *bulk_magnetization(model, train_config.sp4_path)
+                *bulk_magnetization(model, sp4_trajectory)
             )
         },
         step=train_config.epochs,

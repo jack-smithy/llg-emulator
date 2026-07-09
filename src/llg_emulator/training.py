@@ -26,9 +26,9 @@ def count_parameters(model: LLGEmulator) -> int:
     )
 
 
-def loss_fn(model: LLGEmulator, m0: Array, m1: Array, H: Array) -> Array:
+def loss_fn(model: LLGEmulator, m0: Array, m1: Array, H_ext: Array) -> Array:
     """One-step MSE — the training objective, shared by train + evaluate."""
-    m1_pred = jax.vmap(model)(*(m0, H))
+    m1_pred = jax.vmap(model)(*(m0, H_ext))
     return MSE(m1_pred, m1)
 
 
