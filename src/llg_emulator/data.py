@@ -1,7 +1,4 @@
-import json
-from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
-from pathlib import Path
 
 import grain
 import msgpack
@@ -10,33 +7,6 @@ from einops import rearrange
 from tqdm import tqdm
 
 from llg_emulator.train_config import TrainConfig
-
-
-def load_metadata(path: Path) -> dict:
-    """Metadata json for one trajectory"""
-    with open(path / "params.json") as f:
-        return json.load(f)
-
-
-def load_trajectory(path: Path):
-    """One trajectory as contiguous float32 (t, c, h, w) + its constant field (3,)."""
-    trj = np.load(path / "m.npy")  # mmap buys nothing; it's read in full
-    trj = rearrange(trj.squeeze(-2), "t h w c -> t c h w")
-    trj = np.ascontiguousarray(trj, dtype=np.float32)
-
-    params = load_metadata(path)
-    Ms = np.float32(params["material"]["Ms"])
-    H = np.asarray(params["H_ext"], dtype=np.float32) / Ms
-    return trj, H
-
-
-def load_trajectories(path: Path, max_workers: int = 16):
-    """Read all trajectories in parallel from disk"""
-    dirs = sorted(p for p in path.iterdir() if p.is_dir())
-    with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        results = list(tqdm(ex.map(load_trajectory, dirs), total=len(dirs)))
-    trajs, fields = zip(*results)
-    return list(trajs), list(fields)
 
 
 def decode_record(raw: bytes) -> dict:
@@ -51,19 +21,26 @@ def decode_record(raw: bytes) -> dict:
 class LLGStepperSource:
     def __init__(self, source, T=101, decode_fn=decode_record, delta=1):
         self._src = source
+        self._num_sources = len(source)
         self._decode = decode_fn  # bytes -> np.ndarray (t, c, h, w)
         self._delta = delta
+        self.records = self.decode_records()
 
         self._index = []
         for rec in range(len(self._src)):
             for f in range(T - delta):
                 self._index.append((rec, f))
 
+    def decode_records(self):
+        records = []
+        for src in tqdm(self._src, total=self._num_sources):
+            records.append(self._decode(src))
+        return records
+
     def __len__(self):
         return len(self._index)
 
-    @lru_cache(32)
-    def _decode_cached(self, rec):
+    def _decode(self, rec):
         return self._decode(self._src[rec])
 
     def index_dict(self, traj, f):
@@ -75,7 +52,7 @@ class LLGStepperSource:
 
     def __getitem__(self, idx: int):
         rec, f = self._index[idx]
-        traj = self._decode_cached(rec)  # (T, C, H, W)
+        traj = self.records[rec]  # (T, C, H, W)
         return self.index_dict(traj, f)
 
 
