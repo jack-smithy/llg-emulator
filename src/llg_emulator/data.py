@@ -37,6 +37,14 @@ def load_trajectories(path: Path, max_workers: int = 16):
     return list(trajs), list(fields)
 
 
+def load_trajectories_sequential(path: Path):
+    data = []
+    dirs = [p for p in path.iterdir()]
+    for file in dirs:
+        data.append(load_trajectory(file))
+    return zip(data)
+
+
 class LLGStepperSource(grain.sources.RandomAccessDataSource):
     def __init__(self, path: Path, max_workers: int = 16):
         self.trajs, self.fields = load_trajectories(path, max_workers)
@@ -77,12 +85,6 @@ def dataloader_factory(
             drop_remainder=drop_remainder,
         ).to_iter_dataset()
 
-        ds = grain.experimental.device_put(
-            ds=ds,
-            device=device,
-            cpu_buffer_size=config.cpu_buffer_size,  # batches buffered on host
-            device_buffer_size=config.device_buffer_size,  # batches buffered on device
-        )
         return ds
 
     return closure

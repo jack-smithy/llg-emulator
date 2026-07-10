@@ -18,7 +18,6 @@ from llg_emulator.model import LLGEmulator, ModelConfig
 from llg_emulator.plotting import plot_corr_plotly, plot_m_means_plotly
 from llg_emulator.train_config import TrainConfig
 from llg_emulator.training import (
-    RolloutSource,
     count_parameters,
     make_schedule,
     save_model,
@@ -45,24 +44,15 @@ def _parse_args():
     parser.add_argument("--epochs", type=int, required=True)
     parser.add_argument("--batch-size", type=int, required=True)
     parser.add_argument("--learning-rate", type=float, required=True)
-    parser.add_argument("--size", type=str, default="small")
-    parser.add_argument("--hidden-channels", type=int, default=64)
-    parser.add_argument("--num-blocks", type=int, default=4)
-    # winning recipe knobs (see BENCHMARKS.md / CLAUDE.md)
-    parser.add_argument("--rollout-k", type=int, default=4, help="unroll length in loss")
-    parser.add_argument("--cosine", action="store_true", help="warmup+cosine schedule")
+    parser.add_argument("--cosine", action="store_true")
     parser.add_argument("--weight-decay", type=float, default=1e-5)
     parser.add_argument("--grad-clip", type=float, default=1.0)
-    parser.add_argument("--augment", action="store_true", help="D4xZ2 symmetry aug (16x)")
-    parser.add_argument("--out", type=str, default="weights/best.eqx",
-                        help="where to save the best-SP4-rollout checkpoint")
-    parser.add_argument(
-        "--wandb-mode", type=str, choices=("online", "disabled"), default="online"
-    )
-    parser.add_argument("--cpu-buffer-size", type=int, default=8)
-    parser.add_argument("--device-buffer-size", type=int, default=4)
-    parser.add_argument("--checkpoint-every", type=int, default=5,
-                        help="epochs between SP4 rollout eval + best-checkpoint save")
+    parser.add_argument("--hidden-channels", type=int, default=64)
+    parser.add_argument("--num-blocks", type=int, default=4)
+    parser.add_argument("--checkpoint-every", type=int, default=5)
+    parser.add_argument("--out", type=str, default="weights/best.eqx")
+    parser.add_argument("--size", type=str, default="small")
+    parser.add_argument("--wandb-mode", type=str, choices=("online", "disabled"))
     return parser.parse_args()
 
 
@@ -80,8 +70,6 @@ def main():
         epochs=args.epochs,
         size=args.size,
         checkpoint_every=args.checkpoint_every,
-        cpu_buffer_size=args.cpu_buffer_size,
-        device_buffer_size=args.device_buffer_size,
     )
 
     wandb.init(
@@ -92,12 +80,9 @@ def main():
 
     device = jax.devices()[0]
 
-    # train on k-step rollout windows (optionally symmetry-augmented); val is
-    # one-step (m0, m1, H) pairs for a cheap held-out signal.
-    train_dataset = RolloutSource(
-        dataset_dir("train", train_config.size), k=args.rollout_k, augment=args.augment
-    )
+    train_dataset = LLGStepperSource(dataset_dir("train", train_config.size))
     val_dataset = LLGStepperSource(dataset_dir("val", train_config.size))
+    sp4_dataset = LLGStepperSource(dataset_dir("sp4", train_config.size))
 
     train_loader = dataloader_factory(train_dataset, config=train_config, device=device)
     val_loader = dataloader_factory(val_dataset, config=train_config, device=device)
@@ -131,7 +116,7 @@ def main():
                 loader=train_loader(seed=i),
                 optimizer=optimizer,
                 opt_state=opt_state,
-                k=args.rollout_k,
+                device=device,
             )
             val_loss = val_epoch(model=model, loader=val_loader(seed=i))
 
@@ -151,7 +136,7 @@ def main():
                 log_dict["val/corr_mean"] = corr_mean.mean().item()
                 log_dict["val/corr_final"] = corr_mean[-1].item()
 
-                rmse = sp4_rollout_rmse(model, train_config.sp4_path)
+                rmse = sp4_rollout_rmse(model, sp4_dataset)
                 log_dict["val/sp4_bulk_rmse"] = rmse
                 if rmse < best_rmse:
                     best_rmse = rmse

@@ -12,8 +12,16 @@
 #SBATCH --mail-user=jack.smith@univie.ac.at
 
 uv run train \
-    --epochs 64 \
-    --batch-size 20 \
-    --learning-rate 0.00001 \
+    --seed 0 \
+    --epochs 24 \
+    --batch-size 8 \
+    --learning-rate 3e-4 \
+    --cosine \
+    --weight-decay 1e-5 \
+    --grad-clip 1.0 \
+    --hidden-channels 64 \
+    --num-blocks 4 \
+    --checkpoint-every 5 \
+    --out weights/best.eqx \
     --size small \
     --wandb-mode online 

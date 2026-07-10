@@ -15,3 +15,5 @@ data/
 *.log
 wandb
 artifacts
+notebooks
+weights

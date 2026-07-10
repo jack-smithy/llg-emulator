@@ -11,8 +11,6 @@ class TrainConfig:
     epochs: int
     size: Literal["small", "med", "large"]
     checkpoint_every: int
-    cpu_buffer_size: int
-    device_buffer_size: int
 
     @property
     def sp4_path(self) -> Path:

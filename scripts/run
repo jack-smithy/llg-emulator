@@ -4,24 +4,24 @@
 # rollout RMSE. Reaches sp4_bulk_rmse ~0.037 (baseline was 0.81).
 #
 # Picks the GPU with the most free memory automatically.
-set -euo pipefail
-cd "$(dirname "$0")/.."
+# set -euo pipefail
+# cd "$(dirname "$0")/.."
 
-GPU=$(nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits \
-      | sort -t, -k2 -n | head -1 | cut -d, -f1 | tr -d ' ')
-echo "using GPU $GPU (lowest memory)"
+# GPU=$(nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits \
+#       | sort -t, -k2 -n | head -1 | cut -d, -f1 | tr -d ' ')
+# echo "using GPU $GPU (lowest memory)"
 
-CUDA_VISIBLE_DEVICES=$GPU uv run train \
-    --epochs 60 \
+CUDA_VISIBLE_DEVICES=0 uv run train \
+    --seed 0 \
+    --epochs 8 \
     --batch-size 8 \
     --learning-rate 3e-4 \
-    --rollout-k 4 \
     --cosine \
     --weight-decay 1e-5 \
     --grad-clip 1.0 \
     --hidden-channels 64 \
     --num-blocks 4 \
-    --checkpoint-every 5 \
+    --checkpoint-every 2 \
     --out weights/best.eqx \
     --size small \
-    --wandb-mode disabled
+    --wandb-mode online 
