@@ -1,9 +1,9 @@
-CUDA_VISIBLE_DEVICES=0 uv run train \
+CUDA_VISIBLE_DEVICES=2 uv run train \
     --epochs 10 \
     --batch-size 64 \
     --learning-rate 0.00001 \
     --size small \
     --wandb-mode disabled \
     --checkpoint-every 2 \
-    --cpu-buffer-size 128 \
-    --device-buffer-size 64
+    --cpu-buffer-size 8 \
+    --device-buffer-size 4

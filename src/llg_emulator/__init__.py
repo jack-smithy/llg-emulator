@@ -101,7 +101,7 @@ def main():
     )
 
     val_source = ArrayRecordDataSource(
-        get_shards(dataset_dir("train", train_config.size))
+        get_shards(dataset_dir("val", train_config.size))
     )
 
     sp4_source = ArrayRecordDataSource(
