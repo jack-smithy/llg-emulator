@@ -2,18 +2,18 @@
 #
 #SBATCH -J train_llg
 #SBATCH -n 1
-#SBATCH --time="2:00:00"
+#SBATCH --time="0:20:00"
 #SBATCH --partition=zen4_0768_h100x4
 #SBATCH --qos=zen4_0768_h100x4
 #SBATCH --mail-type=ALL
 #SBATCH --gres=gpu:1
 #SBATCH --requeue
-#SBATCH -o train.log
+#SBATCH -o logs/train2.log
 #SBATCH --mail-user=jack.smith@univie.ac.at
 
 uv run train \
     --seed 0 \
-    --epochs 24 \
+    --epochs 10 \
     --batch-size 8 \
     --learning-rate 3e-4 \
     --cosine \
@@ -21,7 +21,7 @@ uv run train \
     --grad-clip 1.0 \
     --hidden-channels 64 \
     --num-blocks 4 \
-    --checkpoint-every 5 \
+    --checkpoint-every 2 \
     --out weights/best.eqx \
-    --size small \
+    --size med \
     --wandb-mode online 

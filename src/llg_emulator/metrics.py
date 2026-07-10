@@ -3,6 +3,7 @@ from jaxtyping import Array
 from llg_emulator.rollout import rollout_trajectory, rollout_trajectories
 from llg_emulator.data import load_trajectory
 import grain
+import numpy as np
 
 
 def nRMSE(pred, ref) -> Array:
@@ -26,13 +27,18 @@ def MSE(pred: Array, ref: Array) -> Array:
 
 def correlation_epoch(model, source):
 
-    def loader(source):
-        ds = grain.MapDataset.source(source=source)
-        ds = ds.map(lambda x: (x.trajs, x.fields))
-        return ds.batch(8, drop_remainder=True).to_iter_dataset()
+    def loader(source, batch_size):
+        num_trjs = len(source.fields)
+        num_batches = num_trjs // batch_size
+
+        for i in range(num_batches):
+            yield (
+                np.stack(source.trajs[i : i + batch_size]),
+                np.stack(source.fields[i : i + batch_size]),
+            )
 
     m_refs, m_preds = [], []
-    for m_ref, field in loader(source):
+    for m_ref, field in loader(source, 8):
         m_pred = rollout_trajectories(model, m_ref, field)
         m_preds.append(m_pred)
         m_refs.append(m_ref)

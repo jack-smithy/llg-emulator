@@ -30,19 +30,11 @@ def load_trajectory(path: Path):
 
 def load_trajectories(path: Path, max_workers: int = 16):
     """Read all trajectories in parallel from disk"""
-    dirs = sorted(p for p in path.iterdir() if p.is_dir())
+    dirs = sorted(p for p in path.iterdir() if p.is_dir())[:10]
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         results = list(tqdm(ex.map(load_trajectory, dirs), total=len(dirs)))
     trajs, fields = zip(*results)
     return list(trajs), list(fields)
-
-
-def load_trajectories_sequential(path: Path):
-    data = []
-    dirs = [p for p in path.iterdir()]
-    for file in dirs:
-        data.append(load_trajectory(file))
-    return zip(data)
 
 
 class LLGStepperSource(grain.sources.RandomAccessDataSource):
