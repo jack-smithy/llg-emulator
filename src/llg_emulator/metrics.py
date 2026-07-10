@@ -38,13 +38,14 @@ def correlation_epoch(model, source):
             )
 
     m_refs, m_preds = [], []
-    for m_ref, field in loader(source, 8):
+    for m_ref, field in loader(source, 2):
         m_pred = rollout_trajectories(model, m_ref, field)
         m_preds.append(m_pred)
         m_refs.append(m_ref)
 
-    m_ref = jnp.stack(m_refs, axis=0)
-    m_pred = jnp.stack(m_preds, axis=0)
+    m_ref = jnp.concat(m_refs, axis=0)
+    m_pred = jnp.concat(m_preds, axis=0)
+
     mean, std = correlation(m_pred, m_ref)
     return mean, std
 

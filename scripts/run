@@ -24,4 +24,4 @@ CUDA_VISIBLE_DEVICES=0 uv run train \
     --checkpoint-every 2 \
     --out weights/best.eqx \
     --size small \
-    --wandb-mode online 
+    --wandb-mode disabled 
