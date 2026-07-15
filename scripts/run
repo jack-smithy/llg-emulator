@@ -1,27 +1,14 @@
-#!/usr/bin/env bash
-# Train the SP4 emulator with the best recipe found in the sweep (see BENCHMARKS.md):
-# hidden_channels=64 + rollout-k4 loss + cosine schedule, best-checkpointed on SP4
-# rollout RMSE. Reaches sp4_bulk_rmse ~0.037 (baseline was 0.81).
-#
-# Picks the GPU with the most free memory automatically.
-# set -euo pipefail
-# cd "$(dirname "$0")/.."
-
-# GPU=$(nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits \
-#       | sort -t, -k2 -n | head -1 | cut -d, -f1 | tr -d ' ')
-# echo "using GPU $GPU (lowest memory)"
-
-CUDA_VISIBLE_DEVICES=0 uv run train \
+CUDA_VISIBLE_DEVICES=3 uv run train \
     --seed 0 \
-    --epochs 8 \
-    --batch-size 8 \
-    --learning-rate 3e-4 \
+    --epochs 4 \
+    --batch-size 16 \
+    --learning-rate 1e-4 \
     --cosine \
     --weight-decay 1e-5 \
     --grad-clip 1.0 \
     --hidden-channels 64 \
     --num-blocks 4 \
     --checkpoint-every 2 \
-    --out weights/best.eqx \
+    --out results/weights \
     --size small \
     --wandb-mode disabled 

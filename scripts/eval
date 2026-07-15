@@ -1,0 +1,4 @@
+CUDA_VISIBLE_DEVICES=3 uv run src/llg_emulator/evaluate.py \
+    --seed 0 \
+    --size small \
+    --model-path results/weights/best.eqx

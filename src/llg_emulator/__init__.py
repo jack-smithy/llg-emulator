@@ -137,7 +137,7 @@ def main():
                 )
                 log_dict["val/rollout"] = plot_m_means_plotly(m_mean_ref, m_mean_pred)
 
-            save_model(model, model_config, save_path, tag=f"epoch_{i}")
+                save_model(model, model_config, save_path, tag=f"epoch_{i}")
             bar.set_description(f"val={val_loss:.4e}")
             wandb.log(log_dict, step=i)
 

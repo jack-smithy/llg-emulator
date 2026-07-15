@@ -18,7 +18,7 @@ def correlation(pred, ref):
     pointwise_corr = jnp.sum(pred * ref, axis=-3)  # (..., t, nx, ny)
     framewise_corr = jnp.sqrt(jnp.mean(pointwise_corr**2, axis=(-1, -2)))  # (..., t,)
     if len(framewise_corr.shape) == 2:  # if batch axis, reduce over batches
-        return framewise_corr.mean(axis=0), framewise_corr.std(0)
+        return framewise_corr.mean(axis=0), framewise_corr.std(axis=0)
     return framewise_corr, jnp.zeros_like(framewise_corr)
 
 
