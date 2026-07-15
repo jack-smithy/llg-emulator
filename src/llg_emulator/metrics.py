@@ -1,8 +1,9 @@
+import equinox as eqx
 import jax.numpy as jnp
 from jaxtyping import Array
+from llg_emulator.model import LLGEmulator
 from llg_emulator.rollout import rollout_trajectory, rollout_trajectories
-from llg_emulator.data import load_trajectory
-import grain
+from llg_emulator.data import LLGStepperSource, load_trajectory
 import numpy as np
 
 
@@ -38,7 +39,7 @@ def correlation_epoch(model, source):
             )
 
     m_refs, m_preds = [], []
-    for m_ref, field in loader(source, 2):
+    for m_ref, field in loader(source, 4):
         m_pred = rollout_trajectories(model, m_ref, field)
         m_preds.append(m_pred)
         m_refs.append(m_ref)
@@ -54,3 +55,19 @@ def bulk_magnetization(model, path):
     m_true, H_ext = load_trajectory(path)
     m_pred = rollout_trajectory(model, m_true, H_ext, include_init=True)
     return jnp.mean(m_true, axis=(2, 3)), jnp.mean(m_pred, axis=(2, 3))
+
+
+def sp4_rollout_rmse(model: LLGEmulator, source: LLGStepperSource) -> float:
+    """Bulk-magnetization RMSE of a 100-step SP4 rollout vs. the reference.
+
+    The model-selection metric: SP4 is the deliverable and its applied field is
+    out-of-distribution, so this is what best-checkpointing tracks.
+    """
+    model = eqx.nn.inference_mode(model)
+
+    m_true, H = source.trajs[0], source.fields[0]
+    m_true = jnp.asarray(m_true)
+    m_pred = rollout_trajectory(model, m_true, jnp.asarray(H), include_init=True)
+    bulk_true = jnp.mean(m_true, axis=(2, 3))
+    bulk_pred = jnp.mean(m_pred, axis=(2, 3))
+    return float(jnp.sqrt(jnp.mean((bulk_true - bulk_pred) ** 2)))

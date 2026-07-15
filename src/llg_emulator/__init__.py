@@ -13,15 +13,15 @@ from tqdm import tqdm
 import wandb
 from llg_emulator.config import JAX_CACHE_DIR, dataset_dir
 from llg_emulator.data import LLGStepperSource, dataloader_factory
-from llg_emulator.metrics import bulk_magnetization, correlation_epoch
+from llg_emulator.io import save_model
+from llg_emulator.metrics import bulk_magnetization
 from llg_emulator.model import LLGEmulator, ModelConfig
-from llg_emulator.plotting import plot_corr_plotly, plot_m_means_plotly
+from llg_emulator.plotting import plot_m_means_plotly
 from llg_emulator.train_config import TrainConfig
+from llg_emulator.physics import DemagField
 from llg_emulator.training import (
     count_parameters,
     make_schedule,
-    save_model,
-    sp4_rollout_rmse,
     train_epoch,
     trainable_filter,
     val_epoch,
@@ -59,6 +59,8 @@ def _parse_args():
 def main():
     args = _parse_args()
     seed = args.seed
+    save_path = Path(args.out)
+    save_path.mkdir(exist_ok=False, parents=True)
 
     model_config = ModelConfig(
         hidden_channels=args.hidden_channels,
@@ -80,9 +82,11 @@ def main():
 
     device = jax.devices()[0]
 
-    train_dataset = LLGStepperSource(dataset_dir("train", train_config.size))
-    val_dataset = LLGStepperSource(dataset_dir("val", train_config.size))
-    sp4_dataset = LLGStepperSource(dataset_dir("sp4", train_config.size))
+    train_shards = dataset_dir("train", train_config.size)
+    train_dataset = LLGStepperSource(train_shards, num_shards=None)
+
+    val_shards = dataset_dir("val", train_config.size)
+    val_dataset = LLGStepperSource(val_shards, num_shards=None)
 
     train_loader = dataloader_factory(train_dataset, config=train_config, device=device)
     val_loader = dataloader_factory(val_dataset, config=train_config, device=device)
@@ -92,7 +96,13 @@ def main():
 
     key = jr.PRNGKey(seed)
     key, subkey = jr.split(key)
-    model = LLGEmulator(config=model_config, key=subkey)
+    demag = DemagField(
+        model_config.mesh_n,
+        model_config.mesh_dx,
+        Ms=1.0,
+        p=model_config.demag_p,
+    )
+    model = LLGEmulator(config=model_config, demag=demag, key=subkey)
     wandb.summary["num_parameters"] = count_parameters(model)
 
     steps_per_epoch = max(1, len(train_dataset) // train_config.batch_size)
@@ -107,8 +117,7 @@ def main():
     )
     opt_state = optimizer.init(eqx.filter(model, trainable_filter(model)))
 
-    best_rmse = float("inf")
-    with tqdm(range(train_config.epochs)) as bar:
+    with tqdm(range(1, train_config.epochs + 1)) as bar:
         bar.set_description("loss=inf")
         for i in bar:
             model, opt_state, train_loss = train_epoch(
@@ -122,33 +131,16 @@ def main():
 
             log_dict = {"train/loss": train_loss, "val/loss": val_loss}
 
-            if (i + 1) % train_config.checkpoint_every == 0:
-                # SP4 rollout: log the plot + best-checkpoint on the bulk RMSE
+            if i % train_config.checkpoint_every == 0:
                 m_mean_ref, m_mean_pred = bulk_magnetization(
                     model, train_config.sp4_path
                 )
                 log_dict["val/rollout"] = plot_m_means_plotly(m_mean_ref, m_mean_pred)
 
-                corr_mean, corr_std = correlation_epoch(model, val_dataset)
-                log_dict["val/corr_rollout"] = plot_corr_plotly(
-                    corr_mean=corr_mean, corr_std=corr_std
-                )
-                log_dict["val/corr_mean"] = corr_mean.mean().item()
-                log_dict["val/corr_final"] = corr_mean[-1].item()
-
-                rmse = sp4_rollout_rmse(model, sp4_dataset)
-                log_dict["val/sp4_bulk_rmse"] = rmse
-                if rmse < best_rmse:
-                    best_rmse = rmse
-                    save_model(model, model_config, Path(args.out))
-                    wandb.summary["best_sp4_bulk_rmse"] = best_rmse
-                    wandb.summary["best_epoch"] = i
-
-            bar.set_description(f"val={val_loss:.4e} sp4_best={best_rmse:.4f}")
+            save_model(model, model_config, save_path, tag=f"epoch_{i}")
+            bar.set_description(f"val={val_loss:.4e}")
             wandb.log(log_dict, step=i)
 
-    # if checkpoint-every never fired, still leave a reloadable model behind
-    if best_rmse == float("inf"):
-        save_model(model, model_config, Path(args.out))
-    print(f"best SP4 bulk RMSE {best_rmse:.4f} -> {args.out}")
+    save_model(model, model_config, save_path, tag="weights")
+
     wandb.finish()

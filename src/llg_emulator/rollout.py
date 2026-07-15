@@ -24,13 +24,16 @@ def rollout_trajectory(
     model: LLGEmulator,
     m_true,
     H_ext,
+    s0=jnp.array([0.0]),
     *,
     include_init: bool = True,
 ) -> Array:
     assert H_ext.shape == (3,)
+    cond = jnp.concat((H_ext, s0))
+
     n = m_true.shape[0] - 1 if include_init else m_true.shape[0]
     return rollout(
-        lambda x: model(x, H_ext),
+        lambda x: model(x, cond),
         n=n,
         include_init=include_init,
     )(m_true[0])

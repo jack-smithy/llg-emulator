@@ -64,6 +64,7 @@ class LLGEmulator(eqx.Module):
     def __init__(
         self,
         config: ModelConfig,
+        demag: DemagField,
         *,
         key: PRNGKeyArray,
     ):
@@ -80,14 +81,14 @@ class LLGEmulator(eqx.Module):
         )
         self.n_pts = config.num_blocks + 1  # post-lifting + one per block
         self.film = FiLM(
-            in_features=3,
+            in_features=4,
             hidden_channels=config.hidden_channels,
             out_features=self.n_pts * 2 * config.hidden_channels,
             key=film_key,
         )
         # Ms cancels under the nondim (h_demag / Ms) output, so any positive
         # value gives the nondimensionalised demag field the model consumes.
-        self.demag = DemagField(config.mesh_n, config.mesh_dx, Ms=1.0, p=config.demag_p)
+        self.demag = demag
 
     def step(self, m0, dm):
         # tangent-space residual: the true change is perpendicular to m
