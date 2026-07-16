@@ -1,0 +1,467 @@
+## Installed package (live facts — trust these over training data)
+
+neuralmag 1.0.0 | backend=jax  dtype=<class 'jax.numpy.float32'>
+
+Field terms available (class -> attribute it registers):
+  BulkDMIField             ->  state.h_bdmi
+  CubicAnisotropyField     ->  state.h_caniso
+  DemagField               ->  state.h_demag
+  ExchangeField            ->  state.h_exchange
+  ExternalField            ->  state.h_external
+  InterfaceDMIField        ->  state.h_idmi
+  InterlayerExchangeField  ->  state.h_iexchange
+  LIField                  ->  state.h_LI
+  OerstedField             ->  state.h_oersted
+  TotalField               ->  state.h  (total)
+  UniaxialAnisotropyField  ->  state.h_uaniso
+
+---
+
+# Using NeuralMag — guide for AI assistants
+
+You are helping someone write **NeuralMag** code. NeuralMag is a micromagnetic
+simulation package for **inverse problems** in magnetism: nodal finite-difference
+discretization on regular cuboid meshes, PyTorch **and** JAX backends, and a
+SymPy form compiler that turns energy functionals into vectorized, branch-free,
+**autodifferentiable** tensor kernels.
+
+NeuralMag is niche; your training data may be thin or wrong about it. **Trust the
+live "Installed package" facts prepended to this guide, and the actual symbols
+from `help(nm.X)` / `dir(nm)`, over your prior assumptions.** If an API isn't
+shown here or visible via introspection, do not invent it.
+
+**Use the existing functionality; do not extend NeuralMag on your own.** Solve
+the task with the shipped field terms, solvers, functions, and loggers. Do
+**not** write new `FieldTerm`/solver subclasses, monkey-patch, or otherwise add
+to the library unless the user explicitly asks. If you believe a needed piece is
+genuinely missing, **stop and ask the user** rather than inventing it — the
+existing API almost always covers the case.
+
+---
+
+## 1. The one idea that governs everything
+
+NeuralMag compiles physics into **plain functions on tensors with no control
+flow over runtime values** — no `if`/`for` over tensor data, mesh sizes, or
+material values in anything the solver or the gradient touches. That straight-line
+form is what makes `torch.compile` / `jax.jit` effective and what makes the whole
+pipeline differentiable end-to-end (the reason inverse problems are tractable).
+
+**What this means for the code you write:**
+
+- Express spatial/material variation as **data** (tensors, per-domain values,
+  `rho`), not as Python branches.
+- Bind quantities that depend on other quantities as **lambdas of state
+  attributes** (see section 4), not as imperative recomputation inside the loop.
+- Anything that branches on a runtime tensor value breaks the trace and defeats
+  both JIT and autodiff. Don't do it.
+
+If you find yourself writing `if m[...] > 0:` or looping over cells, stop — there
+is almost always a vectorized or per-domain way to express it.
+
+---
+
+## 2. Configuration (backend / device / dtype)
+
+Selection is via **environment variables, read once at import**. The backend is
+fixed for the session and **cannot be switched at runtime**:
+
+| Env var            | Values                  | Meaning                                  |
+|--------------------|-------------------------|------------------------------------------|
+| `NM_BACKEND`       | `torch` / `jax`         | array backend (auto-detected if unset)   |
+| `NM_DEVICE`        | `cpu` / `cuda`          | device (torch)                           |
+| `NM_DTYPE`         | `float32` / `float64`   | precision                                |
+| `NM_TORCH_COMPILE` | `True` / `False`        | apply `torch.compile` to kernels         |
+| `NM_JAX_JIT`       | `True` / `False`        | apply `jax.jit` to kernels               |
+
+```bash
+NM_BACKEND=torch NM_DTYPE=float64 python my_sim.py
+```
+
+`dtype` may also be set in Python **before tensors are created**:
+
+```python
+import neuralmag as nm
+nm.config.dtype = "float64"   # do this first; many problems need float64 to converge
+```
+
+Query the active config at runtime:
+
+```python
+nm.config.device         # current device
+nm.config.dtype          # current dtype
+nm.config.backend_name   # "torch" or "jax" (set once the backend is initialized)
+```
+
+> Pitfall: do **not** try to switch backends mid-script or mix torch and jax
+> tensors. Pick one via `NM_BACKEND` and stay in it.
+
+---
+
+## 3. Canonical workflow (memorize this shape)
+
+A complete simulation — muMAG **standard problem 4**, relax then switch:
+
+```python
+import neuralmag as nm
+from scipy import constants
+
+# 1. Mesh: n cells, cell size dx (m), optional origin. SP4 is a single-layer
+#    thin film, so use a 2D mesh (100x25) under the default nodal discretization;
+#    dx still has 3 entries and dx[2]=3nm sets the physical thickness.
+mesh = nm.Mesh([100, 25], [5e-9, 5e-9, 3e-9], [0.0, 0.0, 0.0])
+
+# 2. State holds mesh, material params, fields, and dynamic attributes.
+state = nm.State(mesh)
+
+# 3. Material parameters (SI units).
+state.material.Ms = 8e5         # saturation magnetization [A/m]
+state.material.A = 1.3e-11      # exchange constant [J/m]
+state.material.alpha = 0.02     # Gilbert damping
+
+# 4. Initial magnetization (a unit-vector field on the mesh).
+state.m = nm.VectorFunction(state).fill((0.5**0.5, 0.5**0.5, 0.0))
+
+# 5. Register effective-field contributions. Each .register(state, "name")
+#    creates state.h_<name> and state.E_<name>. TotalField sums named terms
+#    into state.h / state.E.
+nm.ExchangeField().register(state, "exchange")
+nm.DemagField().register(state, "demag")
+nm.TotalField("exchange", "demag").register(state)
+
+# 6. Solve. relax() drives the system to equilibrium by integrating the
+#    damping-only (overdamped) LLG; step(dt) integrates the full LLG dynamics.
+llg = nm.LLGSolver(state)
+llg.relax()
+state.write_vti(["m"], "sp4/s-state.vti")
+
+# 7. Add an external field, rebuild the total field, reset the solver.
+h_ext = nm.VectorFunction(state).fill(
+    [-24.6e-3 / constants.mu_0, 4.3e-3 / constants.mu_0, 0.0]
+)
+nm.ExternalField(h_ext).register(state, "external")
+nm.TotalField("exchange", "demag", "external").register(state)
+llg.reset()
+
+# 8. Time integration. state.t is the current time; advance it with step(dt).
+logger = nm.Logger("sp4", ["t", "m"], ["m"])
+while state.t < 1e-9:
+    llg.step(1.0e-11)
+    logger.log(state)
+```
+
+Key objects and methods (verify exact signatures with `help`):
+
+- `nm.Mesh(n, dx, origin=...)` — `n` = cell counts (1D/2D/3D), `dx` = spacing in m
+  (**always 3 entries**, even for 1D/2D meshes — the trailing ones set the
+  thickness/width). For a **single-layer thin film** under the default nodal
+  discretization, use a **2D mesh** `(nx, ny)` rather than a 3D `(nx, ny, 1)`:
+  it has one node layer in z instead of two redundant ones, and `dx[2]` still
+  carries the physical thickness (demag included). Use a full 3D mesh only when
+  the magnetization actually varies through the thickness (multiple cell layers).
+- `nm.State(mesh)` — central container.
+- `state.material.<name> = ...` — material parameters (proxy onto the state).
+- `nm.VectorFunction(state)` / `nm.Function(state, spaces)` — **nodal** (node-space)
+  fields; this is the **default discretization**, use it for `state.m` and other
+  fields unless cell-space is explicitly requested. `nm.CellFunction(state)` /
+  `nm.VectorCellFunction(state)` are the cell-space (FIC) variants — material
+  parameters (`Ms`, `A`, `Ku`, ...) and `rho` are cell fields, but `state.m`
+  should be nodal `VectorFunction` by default. All take `.fill(value)` or `tensor=...`.
+- `<FieldTerm>().register(state, name)` -> `state.h_<name>`, `state.E_<name>`.
+- `nm.TotalField(*names).register(state)` -> `state.h`, `state.E`.
+- `nm.LLGSolver(state)` -> `.relax(tol, dt)` (overdamped relaxation to equilibrium;
+  `tol` is the `max|dm/dt|` stopping criterion in rad/s), `.step(dt)`, `.reset()`;
+  `state.t` tracks the current time.
+- `nm.Logger(dir, scalars, fields)` / `nm.ScalarLogger(path, columns)` -> `.log(state)`.
+- `state.write_vti(["m", ...], path)` — ParaView output.
+
+The available field-term classes are listed in the live header above (e.g.
+`ExchangeField`, `DemagField`, `UniaxialAnisotropyField`, `CubicAnisotropyField`,
+`BulkDMIField`, `InterfaceDMIField`, `InterlayerExchangeField`, `ExternalField`,
+`OerstedField`, `LIField`).
+
+---
+
+## 4. Dynamic attributes (the lambda mechanism)
+
+Almost any state attribute can be a **lambda whose parameter names are other
+state attributes**. On read, NeuralMag resolves the lambda, fetches the named
+attributes from the state, and calls it (lazily, memoizing the call graph):
+
+```python
+# temperature-dependent Ms, bound by argument name "T"
+Ms0, Tc = 8e5, 400.0
+state.T = 300.0
+state.material.Ms = lambda T: Ms0 * (1 - T / Tc) ** 1.5
+# reading state.material.Ms now evaluates the lambda; reassigning state.T
+# invalidates the cache so the next read picks up the new value.
+```
+
+Rules and pitfalls (these bite often):
+
+- **Argument names must match existing state attribute names.**
+  `lambda temperature: ...` fails if you stored it as `state.T`.
+- **Don't capture tensors by closure.** Pass dependencies through the parameter
+  list so the dependency graph can see them — otherwise `resolve`/`remap` and
+  autodiff miss them.
+- **Plain tensor/scalar assignment overwrites a lambda** (and `int`/`float`/`list`
+  are auto-converted to backend tensors). Reassigning any attribute clears the
+  resolved-function cache, so avoid reassigning structural attributes inside hot
+  loops.
+- A lambda can also produce a `Function`'s data:
+  `nm.VectorFunction(state, tensor=lambda T: state.tensor([0, 0, 1 - T/Tc]))`.
+
+### Inverse problems: `state.resolve` / `state.remap`
+
+For optimization you want a **pure function of just the design variables**, with
+everything else pre-bound. That is `state.resolve`:
+
+```python
+# pure function of the design tensor rho_m; mesh, Ms, relaxed m, ... are baked in
+demag_func = state.resolve("h_demag", ["rho_m"])
+# now demag_func(rho_m_tensor) is differentiable with jax.grad / torch.autograd
+```
+
+- Call `resolve` **once, outside** the optimization loop (it has compile cost).
+- Inside the loop, update only the **tensor** (`state.rho_m.tensor = ...`), never
+  the lambda graph, so the resolved closure stays valid.
+- `state.remap(func, {"a": "x"})` just renames arguments (smaller cousin of
+  `resolve`).
+
+---
+
+## 5. Multiple regions / materials
+
+Two distinct tools — pick by whether the geometry is fixed or is itself the
+design variable.
+
+### Material density `rho` (the universal mask)
+
+`state.rho` is a `CellFunction` that is `1.0` in magnetic material and
+`state.eps` (machine epsilon) outside. Every generated energy/field form is
+multiplied by `rho`, so non-magnetic cells drop out **without any explicit
+branch**. **Never set `rho` to exactly 0** — that produces `inf`/`nan`; use
+`state.eps`.
+
+### Discrete regions: `add_domain` + `fill_by_domain`
+
+```python
+x, y, z = state.coordinates()
+L0 = 30e-9
+state.add_domain(1, abs(x) <= L0)   # region 1
+state.add_domain(2, abs(x) >  L0)   # region 2
+# (domain 0 is the implicit background; the first add_domain zeros the default)
+
+# per-domain material values, indexed [background_0, region_1, region_2, ...]
+state.material.Ms = nm.CellFunction(state).fill_by_domain([0.0, 8e5, 8e5])
+state.material.A  = nm.CellFunction(state).fill_by_domain([0.0, 1.3e-11, 1.3e-11])
+```
+
+Pitfalls:
+
+- `fill_by_domain` works on **cell-space functions only** (`nm.CellFunction`);
+  nodal functions raise `NotImplementedError`.
+- Domain IDs are **non-negative integers**; `0` is reserved for background.
+- Re-adding an ID overwrites earlier marks — with overlapping conditions, the
+  last call wins.
+- `state.coordinates()` returns physical coordinate arrays for building masks.
+
+### Manual / per-layer values
+
+You can also build a NumPy array and wrap it, instead of using domains:
+
+```python
+import numpy as np
+
+Ku = np.zeros(mesh.n)
+Ku[:, :, 2:] = 1e7                          # only the top layer
+state.material.Ku = nm.CellFunction(state, tensor=state.tensor(Ku))
+state.material.Ku_axis = [1, 0, 0]
+```
+
+### Topology optimization (geometry as design variable)
+
+Make `rho` a lambda of a continuous design field `rho_m`, then `resolve` against
+it (see section 4) — that is what makes the geometry differentiable.
+
+---
+
+## 6. Pitfalls checklist (things assistants get wrong)
+
+- NO control flow on tensor values (`if m[i] > 0`, Python `for` over cells).
+  YES vectorize, or express variation via domains / `rho` / tensors.
+- NO switching `NM_BACKEND` at runtime or mixing torch & jax tensors.
+  YES one backend per process, set via env var.
+- NO `float32` for a problem that needs accuracy.
+  YES `nm.config.dtype = "float64"` **before** creating tensors.
+- NO setting `rho` (or a region's density) to exactly `0`.
+  YES use `state.eps`.
+- NO inventing `State`/solver methods, or writing new field-term/solver
+  subclasses to "extend" NeuralMag on your own.
+  YES use existing functionality; check `dir(nm)`, `help(nm.State)`,
+  `help(nm.LLGSolver)`; if something seems missing, ask the user first.
+- NO cell-space (`VectorCellFunction` / FIC) for `state.m` by default.
+  YES nodal `nm.VectorFunction` unless cell-space is explicitly requested.
+- NO a 3D mesh with a single cell layer (`(nx, ny, 1)`) for a thin film under
+  nodal discretization.
+  YES a 2D mesh `(nx, ny)`; `dx[2]` sets the thickness.
+- NO mismatched lambda arg names, or capturing tensors by closure.
+  YES name parameters after state attributes; pass dependencies explicitly.
+- NO calling `state.resolve` inside the optimization loop, or reassigning the
+  lambda each step.
+  YES resolve once; mutate only `.tensor`.
+- NO assuming the `demos/` examples ship with `pip install` — they don't. The
+  full example gallery is on the docs site (below).
+
+---
+
+## 7. Worked patterns (distilled from the example gallery)
+
+These build on the canonical shape in section 3; each shows one pattern you will
+reach for often. All are distilled from the shipped examples — see the gallery
+(section 8) for the full versions.
+
+### 7.1 Geometry via domains + DMI (2D skyrmion)
+
+Shows a 2D mesh, a circular magnetic region via `add_domain`, and interface DMI +
+uniaxial anisotropy.
+
+```python
+import neuralmag as nm
+from scipy import constants
+
+# 2D mesh (one node layer in z). The origin centers the disk on (0, 0).
+mesh = nm.Mesh((50, 50), (2e-9, 2e-9, 0.6e-9), (-50e-9, -50e-9, 0))
+state = nm.State(mesh)
+
+state.material.Ms = 1.0 / constants.mu_0
+state.material.A = 1.6e-11
+state.material.Di = 4e-3            # interface DMI constant [J/m^2]
+state.material.Di_axis = [0, 0, 1]
+state.material.Ku = 510e3           # uniaxial anisotropy constant [J/m^3]
+state.material.Ku_axis = [0, 0, 1]
+state.material.alpha = 0.1
+
+# 2D mesh -> coordinates() returns (x, y). rho = 1 inside the disk, eps outside.
+x, y = state.coordinates()
+state.add_domain(1, x**2 + y**2 < 50e-9**2)
+
+state.m = nm.VectorFunction(state).fill((0, 0, 1))
+
+nm.ExchangeField().register(state, "exchange")
+nm.DemagField().register(state, "demag")
+nm.InterfaceDMIField().register(state, "dmi")
+nm.UniaxialAnisotropyField().register(state, "aniso")
+nm.TotalField("exchange", "demag", "dmi", "aniso").register(state)
+
+# scale_t rescales internal time units; relax(tol) stops at max|dm/dt| < tol [rad/s].
+llg = nm.LLGSolver(state, scale_t=1e-12)
+llg.relax(1e9)
+state.write_vti(["m", "rho", "e"], "skyrmion-disk/m.vti")
+```
+
+### 7.2 Multilayer hysteresis: time-varying field + custom observable
+
+Shows per-layer material via NumPy arrays, interlayer (RKKY) exchange, a
+**time-dependent external field as a `lambda t`**, and a **custom logged
+observable as a dynamic attribute**.
+
+```python
+import numpy as np
+from scipy import constants
+
+import neuralmag as nm
+
+nm.config.dtype = "float64"   # set before creating tensors; needed for convergence
+
+mesh = nm.Mesh((10, 10, 3), (1e-9, 1e-9, 1e-9))
+state = nm.State(mesh)
+
+# Non-magnetic spacer in the middle cell layer: density = eps (never exactly 0).
+rho = np.ones(mesh.n)
+rho[:, :, 1] = state.eps
+state.rho = nm.CellFunction(state, tensor=state.tensor(rho))
+
+state.material.Ms = 1.0 / constants.mu_0
+state.material.A = 1.3e-11
+state.material.alpha = 1.0
+state.material.iA = nm.Function(state, "ccn").fill(-0.5e-3, expand=True)  # RKKY [J/m^2]
+
+# Uniaxial anisotropy only in the top ferromagnetic layer (pins it).
+Ku = np.zeros(mesh.n)
+Ku[:, :, 2:] = 1e7
+state.material.Ku = nm.CellFunction(state, tensor=state.tensor(Ku))
+state.material.Ku_axis = [1, 0, 0]
+
+# Initial magnetization: top layer reversed along x.
+m = np.zeros((11, 11, 4, 3))
+m[..., 0] = 1.0
+m[:, :, 2:, 0] = -1.0
+state.m = nm.VectorFunction(state, tensor=state.tensor(m))
+
+nm.ExchangeField().register(state, "exchange")
+nm.InterlayerExchangeField(1, 2).register(state, "rkky")  # couples node layers 1 and 2
+nm.ExternalField(
+    lambda t: t * state.tensor([0.0, 5.0 / constants.mu_0 / 5e-9, 0.0])
+).register(state, "external")
+nm.UniaxialAnisotropyField().register(state, "aniso")
+nm.TotalField("exchange", "rkky", "external", "aniso").register(state)
+
+# Custom observable: mean magnetization over the bottom layer (backend-agnostic op).
+state.m_bottom = lambda m: nm.config.backend.mean(m[:, :, :2, :], axis=(0, 1, 2))
+
+llg = nm.LLGSolver(state)
+logger = nm.ScalarLogger("saf/log.dat", ["h_external", "m_bottom"])
+while state.t < 5e-9:
+    logger.log(state)
+    llg.step(1e-10)
+```
+
+### 7.3 Inverse design: topology optimization with autodiff
+
+The reason NeuralMag exists. `rho` is made a differentiable function of a design
+field `rho_m`; `state.resolve` turns the demag field into a pure function of
+`rho_m` that `jax.grad` can differentiate. **Resolve once, outside the loop;
+mutate only `.tensor` inside it.**
+
+```python
+import jax
+import jax.numpy as jnp
+
+import neuralmag as nm  # run with NM_BACKEND=jax
+
+mesh = nm.Mesh((20, 20, 12), (5e-9, 5e-9, 5e-9))
+state = nm.State(mesh)
+state.material.Ms = 1.0
+state.m = nm.VectorFunction(state).fill((0, 0, 1))
+
+# rho depends on the design field rho_m; the top layers are forced to air.
+state.rho = nm.CellFunction(state, tensor=lambda rho_m: rho_m.at[:, :, 10:].set(state.eps))
+state.rho_m = nm.CellFunction(state).fill(1.0)
+
+nm.DemagField().register(state, "demag")
+demag_func = state.resolve("h_demag", ["rho_m"])   # pure function of rho_m — resolve ONCE
+
+def loss(rho_m):
+    # maximize H_z^2 at one point above the design region
+    return -(demag_func(rho_m**3)[10, 10, 12, 2] ** 2)
+
+grad_loss = jax.grad(loss)
+
+lr = 1e3
+for _ in range(100):
+    g = grad_loss(state.rho_m.tensor)
+    state.rho_m.tensor = jnp.clip(state.rho_m.tensor - lr * g, state.eps, 1.0)
+
+state.write_vti("rho", "topology-optimization/rho.vti")
+```
+
+---
+
+## 8. Where to look next
+
+- Full docs & example gallery: https://neuralmag.gitlab.io/neuralmag/
+- This guide, version-matched to the install: `neuralmag.llm_context()`
+- Introspection: `dir(nm)`, `help(nm.State)`, `help(nm.LLGSolver)`,
+  `help(nm.ExchangeField)`.
+

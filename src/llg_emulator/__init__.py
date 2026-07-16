@@ -16,9 +16,9 @@ from llg_emulator.data import LLGStepperSource, dataloader_factory
 from llg_emulator.io import save_model
 from llg_emulator.metrics import bulk_magnetization
 from llg_emulator.model import LLGEmulator, ModelConfig
+from llg_emulator.physics import DemagField
 from llg_emulator.plotting import plot_m_means_plotly
 from llg_emulator.train_config import TrainConfig
-from llg_emulator.physics import DemagField
 from llg_emulator.training import (
     count_parameters,
     make_schedule,
@@ -60,7 +60,7 @@ def main():
     args = _parse_args()
     seed = args.seed
     save_path = Path(args.out)
-    save_path.mkdir(exist_ok=False, parents=True)
+    save_path.mkdir(exist_ok=True, parents=True)
 
     model_config = ModelConfig(
         hidden_channels=args.hidden_channels,
@@ -83,16 +83,24 @@ def main():
     device = jax.devices()[0]
 
     train_shards = dataset_dir("train", train_config.size)
-    train_dataset = LLGStepperSource(train_shards, num_shards=None)
+    train_dataset = LLGStepperSource(train_shards, strides=[1, 2], num_shards=None)
 
     val_shards = dataset_dir("val", train_config.size)
-    val_dataset = LLGStepperSource(val_shards, num_shards=None)
+    val_dataset_stride_1 = LLGStepperSource(val_shards, strides=[1], num_shards=None)
+    val_dataset_stride_2 = LLGStepperSource(val_shards, strides=[2], num_shards=None)
 
     train_loader = dataloader_factory(train_dataset, config=train_config, device=device)
-    val_loader = dataloader_factory(val_dataset, config=train_config, device=device)
+    val_loader_stride_1 = dataloader_factory(
+        val_dataset_stride_1, config=train_config, device=device
+    )
+    val_loader_stride_2 = dataloader_factory(
+        val_dataset_stride_2, config=train_config, device=device
+    )
 
     wandb.summary["num_train_samples"] = len(train_dataset)
-    wandb.summary["num_val_samples"] = len(val_dataset)
+
+    num_val_samples = len(val_dataset_stride_1) + len(val_dataset_stride_2)
+    wandb.summary["num_val_samples"] = num_val_samples
 
     key = jr.PRNGKey(seed)
     key, subkey = jr.split(key)
@@ -127,9 +135,18 @@ def main():
                 opt_state=opt_state,
                 device=device,
             )
-            val_loss = val_epoch(model=model, loader=val_loader(seed=i))
+            val_loss_stride_1 = val_epoch(
+                model=model, loader=val_loader_stride_1(seed=i)
+            )
+            val_loss_stride_2 = val_epoch(
+                model=model, loader=val_loader_stride_2(seed=i)
+            )
 
-            log_dict = {"train/loss": train_loss, "val/loss": val_loss}
+            log_dict = {
+                "train/loss": train_loss,
+                "val/loss_stride_1": val_loss_stride_1,
+                "val/loss_stride_2": val_loss_stride_2,
+            }
 
             if i % train_config.checkpoint_every == 0:
                 m_mean_ref, m_mean_pred = bulk_magnetization(
@@ -138,7 +155,7 @@ def main():
                 log_dict["val/rollout"] = plot_m_means_plotly(m_mean_ref, m_mean_pred)
 
                 save_model(model, model_config, save_path, tag=f"epoch_{i}")
-            bar.set_description(f"val={val_loss:.4e}")
+            bar.set_description(f"val={val_loss_stride_1:.4e}")
             wandb.log(log_dict, step=i)
 
     save_model(model, model_config, save_path, tag="weights")

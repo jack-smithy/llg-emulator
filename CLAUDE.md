@@ -21,6 +21,8 @@ src/llg_emulator/
   data.py           trajectory loading + grain dataloader
   model.py          LLGEmulator (ResNet backbone + FiLM conditioning) + ModelConfig
   physics.py        DemagField — exact demag field via neuralmag (frozen, non-trainable)
+  physics_loss.py   LLGPhysicsLoss — differentiable LLG stepper + physics loss (NOT wired in;
+                    standalone experiment, no caller. See its docstring re: magnum.np exchange)
   training.py       rollout-k loss + jitted update, RolloutSource, cosine sched, save/load, SP4 ckpt metric
   rollout.py        autoregressive trajectory unroll (lax.scan)
   metrics.py        MSE, correlation, bulk magnetization
@@ -127,6 +129,7 @@ at `.../small/sp4/sample_0` (`train_config.sp4_path`).
   `(t, 3, nx, ny)` for trajectories. `H_ext` is a plain `(3,)` vector.
 - **Nondimensionalisation**: all fields are in units of `Ms` (both `H_ext` input and demag output).
 - Don't launch GPU/training jobs from here — CPU tasks (import checks, data inspection) are fine.
+- For any physics implementation, use neuralmag. See neuralmag.txt for documentation.
 
 ## Known issues / cleanup
 

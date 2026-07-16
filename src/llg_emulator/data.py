@@ -53,8 +53,8 @@ class LLGStepperSource(grain.sources.RandomAccessDataSource):
     def __init__(
         self,
         path: Path,
+        strides: list[int],
         max_workers: int = 16,
-        strides=[1, 2, 4, 8],
         num_shards: int | None = None,
     ):
         self.trajs, self.fields = load_trajectories(path, num_shards, max_workers)
