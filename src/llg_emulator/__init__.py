@@ -83,23 +83,17 @@ def main():
     device = jax.devices()[0]
 
     train_shards = dataset_dir("train", train_config.size)
-    train_dataset = LLGStepperSource(train_shards, strides=[1, 2], num_shards=None)
+    train_dataset = LLGStepperSource(train_shards, strides=[1], num_shards=None)
 
     val_shards = dataset_dir("val", train_config.size)
-    val_dataset_stride_1 = LLGStepperSource(val_shards, strides=[1], num_shards=None)
-    val_dataset_stride_2 = LLGStepperSource(val_shards, strides=[2], num_shards=None)
+    val_dataset = LLGStepperSource(val_shards, strides=[1], num_shards=None)
 
     train_loader = dataloader_factory(train_dataset, config=train_config, device=device)
-    val_loader_stride_1 = dataloader_factory(
-        val_dataset_stride_1, config=train_config, device=device
-    )
-    val_loader_stride_2 = dataloader_factory(
-        val_dataset_stride_2, config=train_config, device=device
-    )
+    val_loader = dataloader_factory(val_dataset, config=train_config, device=device)
 
     wandb.summary["num_train_samples"] = len(train_dataset)
 
-    num_val_samples = len(val_dataset_stride_1) + len(val_dataset_stride_2)
+    num_val_samples = len(val_dataset)
     wandb.summary["num_val_samples"] = num_val_samples
 
     key = jr.PRNGKey(seed)
@@ -135,17 +129,11 @@ def main():
                 opt_state=opt_state,
                 device=device,
             )
-            val_loss_stride_1 = val_epoch(
-                model=model, loader=val_loader_stride_1(seed=i)
-            )
-            val_loss_stride_2 = val_epoch(
-                model=model, loader=val_loader_stride_2(seed=i)
-            )
+            val_loss = val_epoch(model=model, loader=val_loader(seed=i))
 
             log_dict = {
                 "train/loss": train_loss,
-                "val/loss_stride_1": val_loss_stride_1,
-                "val/loss_stride_2": val_loss_stride_2,
+                "val/loss": val_loss,
             }
 
             if i % train_config.checkpoint_every == 0:
@@ -155,7 +143,7 @@ def main():
                 log_dict["val/rollout"] = plot_m_means_plotly(m_mean_ref, m_mean_pred)
 
                 save_model(model, model_config, save_path, tag=f"epoch_{i}")
-            bar.set_description(f"val={val_loss_stride_1:.4e}")
+            bar.set_description(f"val={val_loss:.4e}")
             wandb.log(log_dict, step=i)
 
     save_model(model, model_config, save_path, tag="weights")

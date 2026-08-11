@@ -1,6 +1,6 @@
-from typing import Callable
-
+from collections.abc import Callable
 from dataclasses import dataclass
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -12,12 +12,6 @@ from llg_emulator.physics import DemagField
 
 
 class FiLM(eqx.Module):
-    """Maps the H_ext 3-vector to per-(stage, channel) (gamma, beta).
-
-    Final layer is zero-initialised so at start gamma=1, beta=0 (identity
-    modulation) and the model reduces to the plain residual path.
-    """
-
     l1: eqx.nn.Linear
     l2: eqx.nn.Linear
 
