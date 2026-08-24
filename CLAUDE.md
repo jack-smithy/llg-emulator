@@ -28,6 +28,9 @@ src/llg_emulator/
   metrics.py        MSE, correlation, bulk magnetization
   plotting.py       plotly (used) + matplotlib (unused) figures for wandb
   symmetry.py       D4xZ2 symmetry group (exact augmentation), demag-equivariance self-check
+src/datagen/
+  generate.py       training-data generation (neuralmag LLG solver) + test_generate.py smoke test
+.nm_cache/          cached demag tensors (gitignored), shared by datagen + physics.py
 main.ipynb          scratch notebook (stale — see Issues)
 weights/            saved models: best.eqx (fixed-dt winner) + hc64_160.eqx; best_dt.eqx
                     (timestep-conditioned, from scripts/run). Each has a .json sidecar (arch + cond_dim)
@@ -53,7 +56,10 @@ BENCHMARKS.md       readable results table (one row per sweep run); winner marke
 construction (mesh geometry only) and applies an FFT convolution per call. Pure Equinox module,
 no learnable params; the tensor leaf is **frozen** during training (`trainable_filter` in
 `training.py`). Output is nondimensionalised by `Ms`, matching the `H_ext / Ms` input convention.
-`Ms` cancels under this nondim, so the model builds demag with `Ms=1.0`.
+`Ms` cancels under this nondim, so the model builds demag with `Ms=1.0`. The tensor is cached on
+disk in `.nm_cache/` (neuralmag's `DemagField(cache_dir=...)`, keyed on n/dx/pbc/p), so repeated
+model construction skips the ~O(minutes) build. neuralmag assembles the tensor in float64 internally
+regardless of `nm.config.dtype` and casts on load, so float32 elsewhere costs no kernel accuracy.
 
 **Data** (`data.py`) — each sample dir has `m.npy` `(t, h, w, 1, 3)` + `params.json`. Frames are
 uniformly spaced at one solver step `dt` (10 ps): 101 frames over 1 ns. `_frames_to_cf` squeezes

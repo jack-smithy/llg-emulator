@@ -14,17 +14,21 @@ jit/vmap-friendly Equinox module with no learnable parameters.
 """
 
 import logging as _logging
+from pathlib import Path
 
 import equinox as eqx
 import jax.numpy as jnp
-from jaxtyping import Array
-
 import neuralmag as nm
+from jaxtyping import Array
 from neuralmag.backends.jax.demag_field import h_cell
 
 # neuralmag logs its setup at INFO on every State build (one per model
 # construction); keep the training/eval output readable.
 nm.set_log_level(_logging.WARNING)
+
+# The mesh geometry is fixed across runs, so the demag tensor is built once and
+# reused (keyed on n/dx/pbc/p by neuralmag). Shared with src/datagen.
+NM_CACHE = Path(__file__).resolve().parents[2] / ".nm_cache"
 
 
 def _build_demag_tensor(n, dx, Ms: float, p: int) -> Array:
@@ -37,7 +41,7 @@ def _build_demag_tensor(n, dx, Ms: float, p: int) -> Array:
     state = nm.State(mesh)
     state.m = nm.VectorCellFunction(state).fill((0, 0, 1))
     state.material.Ms = Ms
-    nm.DemagField(p=p).register(state)
+    nm.DemagField(p=p, cache_dir=NM_CACHE).register(state)
     # State stores N_demag as a stacked (3, 3, nx_pad, ny_rfft, nz) array.
     return jnp.asarray(state.N_demag)
 

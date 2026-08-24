@@ -17,3 +17,5 @@ wandb
 artifacts
 notebooks
 weights
+.nm_cache
+archive
