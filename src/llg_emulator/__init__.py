@@ -66,6 +66,7 @@ def main():
     model_config = ModelConfig(
         hidden_channels=args.hidden_channels,
         num_blocks=args.num_blocks,
+        cond_dim=3,
     )
     train_config = TrainConfig(
         learning_rate=args.learning_rate,

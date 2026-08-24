@@ -26,8 +26,15 @@ def rollout_trajectory(
     H_ext,
     s0=jnp.array([0.0]),
     *,
+    stride: int = 1,
     include_init: bool = True,
 ) -> Array:
+    """Unroll the model from m_true[0], taking `stride`-sized steps.
+
+    Each model call advances `stride` base steps (s_enc = log2(stride)); it makes
+    (len-1)//stride calls with include_init (matching frames 0, stride, 2*stride…),
+    or len//stride without. stride=1 reproduces the original one-step rollout.
+    """
     assert H_ext.shape == (3,)
     cond = jnp.concat((H_ext, s0))
 
@@ -44,8 +51,11 @@ def rollout_trajectories(
     m_true,
     H_ext,
     *,
+    stride: int = 1,
     include_init: bool = True,
 ):
     return jax.vmap(
-        lambda m, h: rollout_trajectory(model, m, h, include_init=include_init)
+        lambda m, h: rollout_trajectory(
+            model, m, h, stride=stride, include_init=include_init
+        )
     )(m_true, H_ext)

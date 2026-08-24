@@ -1,11 +1,9 @@
 import json
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import grain
 import numpy as np
 from einops import rearrange
-from tqdm import tqdm
 
 from llg_emulator.train_config import TrainConfig
 
@@ -18,12 +16,18 @@ def load_metadata(path: Path) -> dict:
         return json.load(f)
 
 
-def load_trajectory(path: Path):
-    """One trajectory as contiguous float32 (t, c, h, w) + its constant field (3,)."""
-    trj = np.load(path / "m.npy")  # mmap buys nothing; it's read in full
-    trj = rearrange(trj.squeeze(-2), "t h w c -> t c h w")
-    trj = np.ascontiguousarray(trj, dtype=np.float32)
+def _frames_to_cf(arr) -> np.ndarray:
+    """(t, h, w, 1, 3) [any dtype] -> contiguous float32 channel-first (t, 3, h, w)."""
+    arr = rearrange(np.asarray(arr).squeeze(-2), "t h w c -> t c h w")
+    return np.ascontiguousarray(arr, dtype=np.float32)
 
+
+def load_trajectory(path: Path):
+    """One *full* trajectory: contiguous float32 (t, c, h, w), its constant field
+    (3,), and the base solver timestep dt (s). Reads the whole m.npy — fine for
+    single-trajectory eval (SP4/bulk rollout), NOT for the training sources, which
+    stream (see TrajectoryStore)."""
+    trj = _frames_to_cf(np.load(path / "m.npy"))
     params = load_metadata(path)
     Ms = np.float32(params["material"]["Ms"])
     H = np.asarray(params["H_ext"], dtype=np.float32) / Ms
