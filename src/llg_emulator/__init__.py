@@ -6,6 +6,7 @@ from pathlib import Path
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 import jax.random as jr
 import optax
 from tqdm import tqdm
@@ -17,7 +18,7 @@ from llg_emulator.io import save_model
 from llg_emulator.metrics import bulk_magnetization
 from llg_emulator.model import LLGEmulator, ModelConfig
 from llg_emulator.physics import DemagField
-from llg_emulator.plotting import plot_m_means_plotly
+from llg_emulator.plotting import plot_m_means, plot_m_means_plotly
 from llg_emulator.train_config import TrainConfig
 from llg_emulator.training import (
     count_parameters,
@@ -147,5 +148,19 @@ def main():
             wandb.log(log_dict, step=i)
 
     save_model(model, model_config, save_path, tag="weights")
+
+    # Domain-size invariance: identical physics and applied field on an 8x wider
+    # mesh. The backbone is fully convolutional, so only the demag tensor has to
+    # be rebuilt (bulk_magnetization does that when the meshes disagree).
+    m_mean_ref, m_mean_pred = bulk_magnetization(model, train_config.large_scale_path)
+    rmse = float(jnp.sqrt(jnp.mean((m_mean_ref - m_mean_pred) ** 2)))
+    wandb.summary["large_scale_bulk_rmse"] = rmse
+    wandb.log(
+        {"large_scale/rollout": plot_m_means_plotly(m_mean_ref, m_mean_pred)},
+        step=train_config.epochs,
+    )
+    fig, _ = plot_m_means(m_mean_ref, m_mean_pred)
+    fig.savefig(save_path / "large_scale_bulk.png")
+    print(f"large-scale bulk RMSE: {rmse:.4e}")
 
     wandb.finish()

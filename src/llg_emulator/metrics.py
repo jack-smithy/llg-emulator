@@ -1,9 +1,11 @@
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 from jaxtyping import Array
 from llg_emulator.model import LLGEmulator
 from llg_emulator.rollout import rollout_trajectory, rollout_trajectories
-from llg_emulator.data import LLGStepperSource, load_trajectory
+from llg_emulator.data import LLGStepperSource, load_metadata, load_trajectory
+from llg_emulator.physics import DemagField
 import numpy as np
 
 
@@ -51,10 +53,45 @@ def correlation_epoch(model, source):
     return mean, std
 
 
+def bulk_rollout(model, m0, H, n_steps, s0=0.0):
+    """Per-step spatial mean of a rollout, without materialising the frames.
+
+    Equivalent to the mean of `rollout_trajectory`, but the scan carries only
+    the current frame: on the 2048^2 domain the full history is ~5 GB of device
+    memory to produce a (t, 3) curve.
+    """
+    cond = jnp.concatenate((H, jnp.array([s0])))
+
+    def scan_fn(m, _):
+        m_next = model(m, cond)
+        return m_next, jnp.mean(m_next, axis=(1, 2))
+
+    _, means = jax.lax.scan(scan_fn, m0, None, length=n_steps)
+    return jnp.concatenate([jnp.mean(m0, axis=(1, 2))[None], means], axis=0)
+
+
 def bulk_magnetization(model, path):
+    """Reference vs. rolled-out bulk magnetization for one trajectory.
+
+    Rebuilds the demag tensor when the trajectory's mesh differs from the one
+    the model was built with (the domain-size-invariance check): the ResNet
+    backbone is resolution-agnostic, the demag kernel is mesh-shaped.
+    """
     m_true, H_ext = load_trajectory(path)
-    m_pred = rollout_trajectory(model, m_true, H_ext, include_init=True)
-    return jnp.mean(m_true, axis=(2, 3)), jnp.mean(m_pred, axis=(2, 3))
+    meta = load_metadata(path)
+
+    if tuple(meta["n"]) != model.demag.n:
+        # ponytail: p is not stored on DemagField; 20 is the only value used.
+        demag = DemagField(meta["n"], meta["dx"], Ms=model.demag.Ms, p=20)
+        model = eqx.tree_at(lambda m: m.demag, model, demag)
+
+    bulk_pred = bulk_rollout(
+        eqx.nn.inference_mode(model),
+        jnp.asarray(m_true[0]),
+        jnp.asarray(H_ext),
+        n_steps=m_true.shape[0] - 1,
+    )
+    return m_true.mean(axis=(2, 3)), bulk_pred
 
 
 def sp4_rollout_rmse(model: LLGEmulator, source: LLGStepperSource) -> float:

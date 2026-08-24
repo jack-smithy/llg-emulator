@@ -1,4 +1,4 @@
-CUDA_VISIBLE_DEVICES=3 uv run train \
+CUDA_VISIBLE_DEVICES=1 uv run train \
     --seed 0 \
     --epochs 64 \
     --batch-size 16 \
@@ -11,4 +11,4 @@ CUDA_VISIBLE_DEVICES=3 uv run train \
     --checkpoint-every 4 \
     --out results/weights \
     --size small \
-    --wandb-mode disabled 
+    --wandb-mode online 
