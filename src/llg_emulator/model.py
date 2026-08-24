@@ -1,6 +1,6 @@
-from typing import Callable
-
+from collections.abc import Callable
 from dataclasses import dataclass
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -12,12 +12,6 @@ from llg_emulator.physics import DemagField
 
 
 class FiLM(eqx.Module):
-    """Maps the H_ext 3-vector to per-(stage, channel) (gamma, beta).
-
-    Final layer is zero-initialised so at start gamma=1, beta=0 (identity
-    modulation) and the model reduces to the plain residual path.
-    """
-
     l1: eqx.nn.Linear
     l2: eqx.nn.Linear
 
@@ -68,6 +62,7 @@ class LLGEmulator(eqx.Module):
     def __init__(
         self,
         config: ModelConfig,
+        demag: DemagField,
         *,
         key: PRNGKeyArray,
     ):
@@ -87,14 +82,14 @@ class LLGEmulator(eqx.Module):
         # scalar so the model can take variable-Δt steps (see step-size arg below).
         self.cond_dim = config.cond_dim
         self.film = FiLM(
-            in_features=config.cond_dim,
+            in_features=4,
             hidden_channels=config.hidden_channels,
             out_features=self.n_pts * 2 * config.hidden_channels,
             key=film_key,
         )
         # Ms cancels under the nondim (h_demag / Ms) output, so any positive
         # value gives the nondimensionalised demag field the model consumes.
-        self.demag = DemagField(config.mesh_n, config.mesh_dx, Ms=1.0, p=config.demag_p)
+        self.demag = demag
 
     def step(self, m0, dm):
         # tangent-space residual: the true change is perpendicular to m

@@ -24,6 +24,7 @@ def rollout_trajectory(
     model: LLGEmulator,
     m_true,
     H_ext,
+    s0=jnp.array([0.0]),
     *,
     stride: int = 1,
     include_init: bool = True,
@@ -35,11 +36,11 @@ def rollout_trajectory(
     or len//stride without. stride=1 reproduces the original one-step rollout.
     """
     assert H_ext.shape == (3,)
-    s_enc = jnp.float32(jnp.log2(stride))
-    steps = (m_true.shape[0] - 1) if include_init else m_true.shape[0]
-    n = steps // stride
+    cond = jnp.concat((H_ext, s0))
+
+    n = m_true.shape[0] - 1 if include_init else m_true.shape[0]
     return rollout(
-        lambda x: model(x, H_ext, s_enc),
+        lambda x: model(x, cond),
         n=n,
         include_init=include_init,
     )(m_true[0])

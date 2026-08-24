@@ -1,6 +1,9 @@
 train:
 	sbatch scripts/run.slrm
 
+eval:
+	sbatch scripts/eval.slrm
+
 check:
 	squeue -u js82197
 

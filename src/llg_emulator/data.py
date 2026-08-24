@@ -7,6 +7,8 @@ from einops import rearrange
 
 from llg_emulator.train_config import TrainConfig
 
+BASE_STEP_TIME = 10e-12  # 10ps
+
 
 def load_metadata(path: Path) -> dict:
     """Metadata json for one trajectory"""
@@ -32,71 +34,50 @@ def load_trajectory(path: Path):
     return trj, H
 
 
-class TrajectoryStore:
-    """Lazily-streamed access to a directory of trajectories.
+def load_trajectories(
+    path: Path,
+    num_shards: int | None,
+    max_workers: int = 16,
+):
+    """Read all trajectories in parallel from disk"""
+    dirs = sorted(p for p in path.iterdir() if p.is_dir())
 
-    At construction it reads only each `params.json` (for H, dt) and the `m.npy`
-    header (for the frame count) — **no frame data**. Frames are memory-mapped and
-    sliced on demand, so host memory stays O(index + a few live frames) regardless
-    of dataset size. This is what lets training scale to datasets far larger than
-    RAM (the previous sources loaded every m.npy fully at init and OOM'd).
+    if num_shards is not None:
+        if num_shards > len(dirs):
+            raise ValueError(f"shards selected={num_shards}, total shards={len(dirs)}")
+        dirs = dirs[:num_shards] if num_shards is not None else dirs
 
-    mmap handles are cached per file. The grain pipeline here is thread-based
-    (device_put/thread-prefetch, not multiprocessing), so a shared handle cache is
-    safe — numpy mmap reads are concurrent-read safe.
-    """
-
-    def __init__(self, path: Path):
-        self.dirs = sorted(p for p in Path(path).iterdir() if p.is_dir())
-        self.fields, self.dts, self.lengths = [], [], []
-        for d in self.dirs:
-            params = load_metadata(d)
-            Ms = np.float32(params["material"]["Ms"])
-            self.fields.append(np.asarray(params["H_ext"], dtype=np.float32) / Ms)
-            self.dts.append(float(params["dt"]))
-            # header-only read (~0.3 ms): frame count without loading data
-            self.lengths.append(int(np.load(d / "m.npy", mmap_mode="r").shape[0]))
-        self._mmaps: dict[int, np.ndarray] = {}
-
-    def _mmap(self, ti: int) -> np.ndarray:
-        mm = self._mmaps.get(ti)
-        if mm is None:
-            mm = np.load(self.dirs[ti] / "m.npy", mmap_mode="r")
-            self._mmaps[ti] = mm
-        return mm
-
-    def frames(self, ti: int, sl: slice) -> np.ndarray:
-        """Channel-first float32 frames trj[sl] for trajectory ti (reads only sl)."""
-        return _frames_to_cf(self._mmap(ti)[sl])
-
-    def frame(self, ti: int, t: int) -> np.ndarray:
-        """Single channel-first float32 frame trj[t]."""
-        return self.frames(ti, slice(t, t + 1))[0]
-
-    def full(self, ti: int) -> np.ndarray:
-        """Whole trajectory (channel-first float32) — for per-trajectory eval."""
-        return self.frames(ti, slice(None))
-
-    def __len__(self) -> int:
-        return len(self.dirs)
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        results = list(tqdm(ex.map(load_trajectory, dirs), total=len(dirs)))
+    trajs, fields = zip(*results)
+    return list(trajs), list(fields)
 
 
 class LLGStepperSource(grain.sources.RandomAccessDataSource):
-    """Streams consecutive (m_t, m_{t+1}, H, s_enc=0) one-step pairs (used for val)."""
-
-    def __init__(self, path: Path, max_workers: int = 16):
-        self.store = TrajectoryStore(path)
-        # small index only: one (traj, t) per consecutive pair across trajectories
+    def __init__(
+        self,
+        path: Path,
+        strides: list[int],
+        max_workers: int = 16,
+        num_shards: int | None = None,
+    ):
+        self.trajs, self.fields = load_trajectories(path, num_shards, max_workers)
+        # flat index: one (traj, t) entry per consecutive pair, across all trajectories
         self.index = np.array(
-            [(ti, t) for ti, n in enumerate(self.store.lengths) for t in range(n - 1)],
+            [
+                (ti, t, s)
+                for ti, trj in enumerate(self.trajs)
+                for s in strides
+                for t in range(trj.shape[0] - s)
+            ],
             dtype=np.int64,
         )
 
     def __getitem__(self, idx: int) -> dict:
-        ti, t = (int(x) for x in self.index[idx])
-        pair = self.store.frames(ti, slice(t, t + 2))  # (2, 3, nx, ny), one read
-        # one-step pairs -> stride 1 -> s_enc = log2(1) = 0
-        return {"m0": pair[0], "m1": pair[1], "H": self.store.fields[ti]}
+        ti, t, s = self.index[idx]
+        trj = self.trajs[ti]
+        s0 = np.log2(s)
+        return {"m0": trj[t], "m1": trj[t + s], "H": self.fields[ti], "s0": s0}
 
     def __len__(self) -> int:
         return len(self.index)
@@ -120,12 +101,6 @@ def dataloader_factory(
             drop_remainder=drop_remainder,
         ).to_iter_dataset()
 
-        ds = grain.experimental.device_put(
-            ds=ds,
-            device=device,
-            cpu_buffer_size=config.cpu_buffer_size,  # batches buffered on host
-            device_buffer_size=config.device_buffer_size,  # batches buffered on device
-        )
         return ds
 
     return closure

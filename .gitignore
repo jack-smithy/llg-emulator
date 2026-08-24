@@ -16,3 +16,4 @@ data/
 wandb
 artifacts
 notebooks
+weights

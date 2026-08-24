@@ -11,9 +11,12 @@ class TrainConfig:
     epochs: int
     size: Literal["small", "med", "large"]
     checkpoint_every: int
-    cpu_buffer_size: int
-    device_buffer_size: int
 
     @property
     def sp4_path(self) -> Path:
         return dataset_dir(split="sp4", size=self.size) / "sample_0"
+
+    @property
+    def large_scale_path(self) -> Path:
+        """Same physics as sp4 on an 8x wider mesh; the domain-size check."""
+        return dataset_dir(split="large-scale", size=self.size) / "sample_0"

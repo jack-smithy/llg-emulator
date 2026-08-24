@@ -2,7 +2,7 @@ from pathlib import Path
 
 JAX_CACHE_DIR = ".jax_cache"
 
-DATA_ROOT = Path("../micromagnetic-data/data/dynamics")
+DATA_ROOT = Path("data/")
 
 
 def dataset_dir(split: str, size: str) -> Path:
