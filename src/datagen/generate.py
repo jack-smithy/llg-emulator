@@ -1,4 +1,5 @@
 import json
+from argparse import ArgumentParser
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -7,6 +8,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import neuralmag as nm
 import numpy as np
+from jaxtyping import PRNGKeyArray
 from scipy.constants import mu_0
 from tqdm.autonotebook import tqdm
 
@@ -25,6 +27,7 @@ class SimulationParams:
     material: dict[str, float]
     H_ext: Sequence[float]
     init: str  # label of the initial condition, e.g. "s_state_inv"
+    key: list[int]
 
     def json_dump(self, save_path: Path):
         with (save_path / "metadata.json").open("w", encoding="utf-8") as file:
@@ -123,13 +126,20 @@ def random_H_ext(key, max_field: float = 30e-3 / mu_0) -> list[float]:
 
 
 def generate_sample(
-    seed: int, n_samples: int, index: int, base_dir: Path, n, dx, t_tot
+    key: PRNGKeyArray,
+    n_samples: int,
+    index: int,
+    base_dir: Path,
+    n,
+    dx,
+    t_tot,
 ) -> None:
     """Generate and save sample `index` (1-based). Its key depends only on
     `(seed, n_samples, index)`, so workers need no shared state and how the
     samples are sharded across GPUs cannot change the output."""
-    k_H, k_init = jr.split(jr.split(jr.PRNGKey(seed), n_samples)[index - 1])
-    init_label, init_m_fn = random_init(k_init)
+    key_h, key_init = jr.split(key)
+
+    init_label, init_m_fn = random_init(key_init)
 
     params = SimulationParams(
         n=n,
@@ -137,31 +147,99 @@ def generate_sample(
         dt=10e-12,
         t_tot=t_tot,
         material={"Ms": 8e5, "A": 1.3e-11, "alpha": 0.02},
-        H_ext=random_H_ext(k_H),
+        H_ext=random_H_ext(key_h),
         init=init_label,
+        key=key.tolist(),
     )
 
     ms, _ = run(params=params, init_m_fn=init_m_fn)
 
-    save_dir = base_dir / f"sample_{index}"
+    save_dir = base_dir / f"sample-{index:05d}-of-{n_samples:05d}"
     save_dir.mkdir(parents=True, exist_ok=False)
 
     params.json_dump(save_path=save_dir)
     np.save(save_dir / "m.npy", ms)
 
 
-def main(
-    seed: int = 0,
-    n_samples: int = 4,
-    base_dir: Path = Path("data/train"),
-    n: Sequence[int] = (255, 255, 1),
-    dx: Sequence[float] = (5e-9, 5e-9, 3e-9),
-    t_tot: float = 1e-9,
-):
-    """Generate `n_samples` trajectories into `base_dir`."""
-    for index in tqdm(range(1, n_samples + 1)):
-        generate_sample(seed, n_samples, index, base_dir, n, dx, t_tot)
+def generate_sp4(
+    key: PRNGKeyArray,
+    n_samples: int,
+    index: int,
+    base_dir: Path,
+    n,
+    dx,
+    t_tot,
+) -> None:
+    params = SimulationParams(
+        n=n,
+        dx=dx,
+        dt=10e-12,
+        t_tot=t_tot,
+        material={"Ms": 8e5, "A": 1.3e-11, "alpha": 0.02},
+        H_ext=[-24.6e-3 / mu_0, 4.3e-3 / mu_0, 0.0],
+        init="s_state",
+        key=key.tolist(),
+    )
+
+    ms, _ = run(params=params, init_m_fn=lambda c: init_m_s_state(c, inv=False))
+
+    save_dir = base_dir / f"sample-{index:05d}-of-{n_samples:05d}"
+    save_dir.mkdir(parents=True, exist_ok=False)
+
+    params.json_dump(save_path=save_dir)
+    np.save(save_dir / "m.npy", ms)
+
+
+def _parse_args():
+    parser = ArgumentParser()
+    parser.add_argument("--seed", type=int, required=True)
+    parser.add_argument("--n-samples", type=int, required=True)
+    parser.add_argument("--split", type=str, required=True)
+    parser.add_argument("--start", type=int, default=1)
+    return parser.parse_args()
+
+
+def main():
+
+    args = _parse_args()
+
+    key = jr.PRNGKey(args.seed)
+
+    base_dir: Path = Path("data/check")
+    n: Sequence[int] = (255, 255)
+    dx: Sequence[float] = (5e-9, 5e-9, 3e-9)
+    t_tot: float = 1e-9
+
+    save_dir = base_dir / args.split
+
+    keys = jr.split(key, args.n_samples)
+    for index in tqdm(range(args.start, args.n_samples + args.start)):
+        generate_sample(keys[index], args.n_samples, index, save_dir, n, dx, t_tot)
+
+
+def main_sp4():
+
+    args = _parse_args()
+
+    key = jr.PRNGKey(args.seed)
+
+    base_dir: Path = Path("data/check")
+    n: Sequence[int] = (255, 255)
+    dx: Sequence[float] = (5e-9, 5e-9, 3e-9)
+    t_tot: float = 1e-9
+
+    save_dir = base_dir / args.split
+
+    generate_sp4(
+        key=key,
+        n_samples=1,
+        index=1,
+        base_dir=save_dir,
+        n=n,
+        dx=dx,
+        t_tot=t_tot,
+    )
 
 
 if __name__ == "__main__":
-    main(n_samples=512)
+    main_sp4()

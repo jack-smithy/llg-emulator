@@ -36,10 +36,13 @@ def write_vtr(field, filename, n, dx):
 def save_model(model: LLGEmulator, config: ModelConfig, path: Path, tag: str):
     path.mkdir(parents=True, exist_ok=True)
     eqx.tree_serialise_leaves(path / f"{tag}.eqx", model)
-    meta = {"hidden_channels": config.hidden_channels, "num_blocks": config.num_blocks}
-    meta_path = path / "metadata.json"
-    if not meta_path.exists():
-        meta_path.write_text(json.dumps(meta))
+    meta = {
+        "hidden_channels": config.hidden_channels,
+        "num_blocks": config.num_blocks,
+        "cond_dim": config.cond_dim,
+    }
+    # rewrite every time: a stale sidecar builds the wrong skeleton on load
+    (path / "metadata.json").write_text(json.dumps(meta))
 
 
 def load_model(path, demag, key, tag="best") -> LLGEmulator:
@@ -47,6 +50,7 @@ def load_model(path, demag, key, tag="best") -> LLGEmulator:
     config = ModelConfig(
         hidden_channels=meta["hidden_channels"],
         num_blocks=meta["num_blocks"],
+        cond_dim=meta.get("cond_dim", 3),  # pre-timestep checkpoints: H_ext only
     )
     skeleton = LLGEmulator(config=config, demag=demag, key=key)
     return eqx.tree_deserialise_leaves(path / f"{tag}.eqx", skeleton)

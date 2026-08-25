@@ -1,6 +1,7 @@
 from dataclasses import dataclass
-from typing import Literal
 from pathlib import Path
+from typing import Literal
+
 from llg_emulator.config import dataset_dir
 
 
@@ -14,7 +15,7 @@ class TrainConfig:
 
     @property
     def sp4_path(self) -> Path:
-        return dataset_dir(split="sp4", size=self.size) / "sample_0"
+        return dataset_dir(split="sp4", size=self.size) / "sample-00001-of-00001"
 
     @property
     def large_scale_path(self) -> Path:

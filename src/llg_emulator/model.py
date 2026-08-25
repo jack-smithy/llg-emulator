@@ -44,7 +44,9 @@ class ModelConfig:
     hidden_channels: int = 32
     num_blocks: int = 4
     activation: Callable = jax.nn.gelu
-    mesh_n: tuple = (256, 256, 1)
+    # mesh *cell* counts (2D thin film); the nodal fields the solver writes -
+    # and the model consumes - are (mesh_n[0] + 1, mesh_n[1] + 1). See physics.py.
+    mesh_n: tuple = (255, 255)
     mesh_dx: tuple = (5e-9, 5e-9, 3e-9)
     demag_p: int = 20
     # FiLM conditioning width: 3 (H_ext only) or 4 (H_ext + log step-size).
@@ -79,10 +81,10 @@ class LLGEmulator(eqx.Module):
         )
         self.n_pts = config.num_blocks + 1  # post-lifting + one per block
         # FiLM conditions on H_ext (3) plus, when cond_dim==4, a log step-size
-        # scalar so the model can take variable-Δt steps (see step-size arg below).
+        # scalar so the model can take variable-Δt steps (see `cond` below).
         self.cond_dim = config.cond_dim
         self.film = FiLM(
-            in_features=4,
+            in_features=config.cond_dim,
             hidden_channels=config.hidden_channels,
             out_features=self.n_pts * 2 * config.hidden_channels,
             key=film_key,
@@ -98,13 +100,7 @@ class LLGEmulator(eqx.Module):
         m1 = m0 + dm
         return m1 / (jnp.linalg.norm(m1, axis=0, keepdims=True) + 1e-8)
 
-    def init_film(self, H, s_enc):
-        # cond_dim==3 -> field only (original fixed-dt model); 4 -> append the
-        # log step-size scalar so the modulation depends on how big a step to take.
-        if self.cond_dim == 3:
-            cond = H
-        else:
-            cond = jnp.concatenate([H, jnp.reshape(s_enc, (1,))])
+    def init_film(self, cond):
         g = self.film(cond).reshape(self.n_pts, 2, -1)
         g = g.at[:, 0, :].add(1.0)
 
@@ -113,8 +109,8 @@ class LLGEmulator(eqx.Module):
 
         return modulate
 
-    def forward(self, m0, H, s_enc):
-        modulate = self.init_film(H, s_enc)
+    def forward(self, m0, cond):
+        modulate = self.init_film(cond)
 
         model_in = jnp.concatenate([m0, self.demag(m0)], axis=0)  # (6, nx, ny)
         h = modulate(self.backbone.lifting(model_in), 0)  # type: ignore
@@ -124,9 +120,11 @@ class LLGEmulator(eqx.Module):
 
         return dm
 
-    def __call__(self, m0: Array, H: Array, s_enc: Array = jnp.float32(0.0)) -> Array:
-        """Predict m at t + (2**s_enc) base steps. s_enc = log2(stride); default
-        s_enc=0 -> stride 1 (one base dt), matching the original one-step map."""
-        dm = self.forward(m0=m0, H=H, s_enc=s_enc)
+    def __call__(self, m0: Array, cond: Array) -> Array:
+        """Predict m at t + stride base steps, given the conditioning vector
+        `cond` of length `cond_dim`: `[H_ext / Ms]` for cond_dim==3, or
+        `[H_ext / Ms, log2(stride)]` for cond_dim==4 (log2(stride)=0 -> one
+        base dt, the original one-step map)."""
+        dm = self.forward(m0=m0, cond=cond)
         m1 = self.step(m0=m0, dm=dm)
         return m1

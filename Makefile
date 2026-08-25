@@ -8,4 +8,4 @@ check:
 	squeue -u js82197
 
 gpu:
-	srun --jobid=$(JOBID) --pty uvx nvitop
+	srun --jobid=$(JOBID) --pty nvidia-smi

@@ -1,13 +1,11 @@
-"""llg-emulator: learn LLG magnetization dynamics for a thin film."""
-
 from argparse import ArgumentParser
 from dataclasses import asdict
 from pathlib import Path
 
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 import jax.random as jr
+import matplotlib.pyplot as plt
 import optax
 from tqdm import tqdm
 
@@ -18,7 +16,7 @@ from llg_emulator.io import save_model
 from llg_emulator.metrics import bulk_magnetization
 from llg_emulator.model import LLGEmulator, ModelConfig
 from llg_emulator.physics import DemagField
-from llg_emulator.plotting import plot_m_means, plot_m_means_plotly
+from llg_emulator.plotting import plot_m_means
 from llg_emulator.train_config import TrainConfig
 from llg_emulator.training import (
     count_parameters,
@@ -51,7 +49,8 @@ def _parse_args():
     parser.add_argument("--hidden-channels", type=int, default=64)
     parser.add_argument("--num-blocks", type=int, default=4)
     parser.add_argument("--checkpoint-every", type=int, default=5)
-    parser.add_argument("--out", type=str, default="weights/best.eqx")
+    # directory: save_model writes <out>/<tag>.eqx + <out>/metadata.json
+    parser.add_argument("--out", type=str, default="results")
     parser.add_argument("--size", type=str, default="small")
     parser.add_argument("--wandb-mode", type=str, choices=("online", "disabled"))
     return parser.parse_args()
@@ -66,7 +65,7 @@ def main():
     model_config = ModelConfig(
         hidden_channels=args.hidden_channels,
         num_blocks=args.num_blocks,
-        cond_dim=3,
+        cond_dim=4,  # [H_ext / Ms, log2(stride)]
     )
     train_config = TrainConfig(
         learning_rate=args.learning_rate,
@@ -142,7 +141,10 @@ def main():
                 m_mean_ref, m_mean_pred = bulk_magnetization(
                     model, train_config.sp4_path
                 )
-                log_dict["val/rollout"] = plot_m_means_plotly(m_mean_ref, m_mean_pred)
+                # log_dict["val/rollout"] = plot_m_means_plotly(m_mean_ref, m_mean_pred)
+                fig, _ = plot_m_means(m_avg=m_mean_ref, m_avg_pred=m_mean_pred)
+                fig.savefig(save_path / f"rollout_epoch_{i}.png")
+                plt.close(fig)
 
                 save_model(model, model_config, save_path, tag=f"epoch_{i}")
             bar.set_description(f"val={val_loss:.4e}")
@@ -153,15 +155,15 @@ def main():
     # Domain-size invariance: identical physics and applied field on an 8x wider
     # mesh. The backbone is fully convolutional, so only the demag tensor has to
     # be rebuilt (bulk_magnetization does that when the meshes disagree).
-    m_mean_ref, m_mean_pred = bulk_magnetization(model, train_config.large_scale_path)
-    rmse = float(jnp.sqrt(jnp.mean((m_mean_ref - m_mean_pred) ** 2)))
-    wandb.summary["large_scale_bulk_rmse"] = rmse
-    wandb.log(
-        {"large_scale/rollout": plot_m_means_plotly(m_mean_ref, m_mean_pred)},
-        step=train_config.epochs,
-    )
-    fig, _ = plot_m_means(m_mean_ref, m_mean_pred)
-    fig.savefig(save_path / "large_scale_bulk.png")
-    print(f"large-scale bulk RMSE: {rmse:.4e}")
+    # m_mean_ref, m_mean_pred = bulk_magnetization(model, train_config.large_scale_path)
+    # rmse = float(jnp.sqrt(jnp.mean((m_mean_ref - m_mean_pred) ** 2)))
+    # wandb.summary["large_scale_bulk_rmse"] = rmse
+    # wandb.log(
+    #     {"large_scale/rollout": plot_m_means_plotly(m_mean_ref, m_mean_pred)},
+    #     step=train_config.epochs,
+    # )
+    # fig, _ = plot_m_means(m_mean_ref, m_mean_pred)
+    # fig.savefig(save_path / "large_scale_bulk.png")
+    # print(f"large-scale bulk RMSE: {rmse:.4e}")
 
     wandb.finish()

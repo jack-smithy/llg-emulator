@@ -22,7 +22,7 @@ def plot_m_means_plotly(m_avg, m_avg_pred):
                 x=tt,
                 y=m_avg[:, i],
                 name="true",
-                line=dict(color="#636efa"),
+                line={"color": "#636efa"},
                 legendgroup="true",
                 showlegend=(i == 0),
             ),
@@ -34,7 +34,7 @@ def plot_m_means_plotly(m_avg, m_avg_pred):
                 x=tt,
                 y=m_avg_pred[:, i],
                 name="pred",
-                line=dict(color="#ef553b"),
+                line={"color": "#ef553b"},
                 legendgroup="pred",
                 showlegend=(i == 0),
             ),
@@ -68,7 +68,7 @@ def plot_corr_plotly(corr_mean, corr_std):
             y=np.concatenate([corr_mean + corr_std, (corr_mean - corr_std)[::-1]]),
             fill="toself",
             fillcolor="rgba(0,100,80,0.3)",
-            line=dict(color="rgba(255,255,255,0)"),
+            line={"color": "rgba(255,255,255,0)"},
             hoverinfo="skip",
             showlegend=False,
         )
@@ -92,7 +92,6 @@ def plot_m_means(m_avg, m_avg_pred):
         axs[i].plot(tt, m_avg_pred[:, i], label="pred")
         axs[i].set_ylim(-1, 1)
         axs[i].set_title(labels[i])
-
     return fig, axs
 
 

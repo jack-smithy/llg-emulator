@@ -1,17 +1,20 @@
 from argparse import ArgumentParser
 from pathlib import Path
-from tqdm import tqdm
+
 import jax
-import jax.random as jr
 import jax.numpy as jnp
+import jax.random as jr
 import matplotlib.pyplot as plt
+from tqdm import tqdm
+
 from llg_emulator.config import JAX_CACHE_DIR, dataset_dir
 from llg_emulator.data import LLGStepperSource
 from llg_emulator.io import load_model
-from llg_emulator.physics import DemagField
-from llg_emulator.training import count_parameters
-from llg_emulator.rollout import rollout_trajectory
 from llg_emulator.metrics import correlation
+from llg_emulator.model import ModelConfig
+from llg_emulator.physics import DemagField
+from llg_emulator.rollout import rollout_trajectory
+from llg_emulator.training import count_parameters
 
 jax.config.update("jax_compilation_cache_dir", JAX_CACHE_DIR)
 
@@ -56,7 +59,8 @@ def main():
 
     key = jr.PRNGKey(seed)
     key, subkey = jr.split(key)
-    demag = DemagField((256, 256, 1), (5e-9, 5e-9, 3e-9), Ms=1.0, p=20)
+    mesh = ModelConfig()
+    demag = DemagField(mesh.mesh_n, mesh.mesh_dx, Ms=1.0, p=mesh.demag_p)
     model = load_model(path=model_path, demag=demag, tag="weights", key=subkey)
 
     val_dataset = LLGStepperSource(val_shards, num_shards=None, strides=[1])

@@ -1,9 +1,11 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import grain
 import numpy as np
 from einops import rearrange
+from tqdm import tqdm
 
 from llg_emulator.train_config import TrainConfig
 
@@ -12,21 +14,22 @@ BASE_STEP_TIME = 10e-12  # 10ps
 
 def load_metadata(path: Path) -> dict:
     """Metadata json for one trajectory"""
-    with open(path / "params.json") as f:
+    with open(path / "metadata.json") as f:
         return json.load(f)
 
 
 def _frames_to_cf(arr) -> np.ndarray:
-    """(t, h, w, 1, 3) [any dtype] -> contiguous float32 channel-first (t, 3, h, w)."""
-    arr = rearrange(np.asarray(arr).squeeze(-2), "t h w c -> t c h w")
+    """(t, h, w, 3) [any dtype] -> contiguous float32 channel-first (t, 3, h, w).
+
+    h/w are the *nodal* grid (mesh cells + 1); see physics.py."""
+    arr = rearrange(np.asarray(arr), "t h w c -> t c h w")
     return np.ascontiguousarray(arr, dtype=np.float32)
 
 
 def load_trajectory(path: Path):
-    """One *full* trajectory: contiguous float32 (t, c, h, w), its constant field
-    (3,), and the base solver timestep dt (s). Reads the whole m.npy — fine for
-    single-trajectory eval (SP4/bulk rollout), NOT for the training sources, which
-    stream (see TrajectoryStore)."""
+    """One *full* trajectory: contiguous float32 (t, c, h, w) and its constant
+    field (3,), nondimensionalised by Ms. Reads the whole m.npy — used for
+    single-trajectory eval (SP4/bulk rollout)."""
     trj = _frames_to_cf(np.load(path / "m.npy"))
     params = load_metadata(path)
     Ms = np.float32(params["material"]["Ms"])
@@ -76,7 +79,7 @@ class LLGStepperSource(grain.sources.RandomAccessDataSource):
     def __getitem__(self, idx: int) -> dict:
         ti, t, s = self.index[idx]
         trj = self.trajs[ti]
-        s0 = np.log2(s)
+        s0 = np.float32(np.log2(s))
         return {"m0": trj[t], "m1": trj[t + s], "H": self.fields[ti], "s0": s0}
 
     def __len__(self) -> int:

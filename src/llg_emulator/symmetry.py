@@ -91,7 +91,7 @@ def _demo():
 
     from llg_emulator.physics import DemagField
 
-    dem = DemagField((32, 32, 1), (5e-9, 5e-9, 3e-9), Ms=1.0, p=20)
+    dem = DemagField((31, 31), (5e-9, 5e-9, 3e-9), Ms=1.0, p=20)
     m = np.asarray(jax.random.normal(jax.random.PRNGKey(0), (3, 32, 32)))
     m = m / np.linalg.norm(m, axis=0, keepdims=True)
 

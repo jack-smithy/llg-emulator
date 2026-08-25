@@ -3,11 +3,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array
-from llg_emulator.model import LLGEmulator
-from llg_emulator.rollout import rollout_trajectory, rollout_trajectories
+
 from llg_emulator.data import LLGStepperSource, load_metadata, load_trajectory
+from llg_emulator.model import LLGEmulator
 from llg_emulator.physics import DemagField
-import numpy as np
+from llg_emulator.rollout import rollout_trajectories, rollout_trajectory
 
 
 def nRMSE(pred, ref) -> Array:
@@ -36,10 +36,8 @@ def correlation_epoch(model, source):
         num_batches = num_trjs // batch_size
 
         for i in range(num_batches):
-            yield (
-                np.stack(source.trajs[i : i + batch_size]),
-                np.stack(source.fields[i : i + batch_size]),
-            )
+            sl = slice(i * batch_size, (i + 1) * batch_size)
+            yield np.stack(source.trajs[sl]), np.stack(source.fields[sl])
 
     m_refs, m_preds = [], []
     for m_ref, field in loader(source, 4):

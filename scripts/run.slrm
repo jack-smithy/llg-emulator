@@ -1,27 +1,16 @@
 #!/bin/bash
 #
-#SBATCH -J train_llg
-#SBATCH -n 1
-#SBATCH --time="4:00:00"
-#SBATCH --partition=zen4_0768_h100x4
-#SBATCH --qos=zen4_0768_h100x4
-#SBATCH --mail-type=FAIL
-#SBATCH --gres=gpu:1
+#SBATCH -J train
+#SBATCH --time="1:00:00"
+#SBATCH --gres=gpu:1g.24gb:1
 #SBATCH --requeue
-#SBATCH -o logs/train-all.log
-#SBATCH --mail-user=jack.smith@univie.ac.at
+#SBATCH -o logs/train.log
 
 uv run train \
-    --epochs 60 \
+    --epochs 16 \
     --batch-size 8 \
-    --learning-rate 3e-4 \
-    --rollout-k 4 \
-    --cosine \
-    --weight-decay 1e-5 \
-    --grad-clip 1.0 \
-    --hidden-channels 64 \
-    --num-blocks 4 \
-    --checkpoint-every 10 \
-    --out weights/best.eqx \
+    --learning-rate 1e-4 \
+    --out results \
     --size large \
-    --wandb-mode online
+    --checkpoint-every 4 \
+    --wandb-mode disabled

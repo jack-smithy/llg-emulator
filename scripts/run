@@ -23,6 +23,6 @@ CUDA_VISIBLE_DEVICES=3 uv run train \
     --hidden-channels 64 \
     --num-blocks 4 \
     --checkpoint-every 5 \
-    --out weights/best_dt.eqx \
+    --out weights/best_dt \
     --size small \
     --wandb-mode online

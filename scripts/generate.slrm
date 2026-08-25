@@ -1,0 +1,9 @@
+#!/bin/bash
+#
+#SBATCH -J datagen
+#SBATCH --time="10:00:00"
+#SBATCH --gres=gpu:1g.24gb:1
+#SBATCH --requeue
+#SBATCH -o logs/generate_check_sp4.log
+
+uv run src/datagen/generate.py --seed 8 --n-samples 1 --split sp4
