@@ -1,0 +1,24 @@
+#!/bin/bash
+#
+#SBATCH -J train_pf
+#SBATCH --time="16:00:00"
+#SBATCH --gres=gpu:1g.24gb:1
+#SBATCH --requeue
+#SBATCH -o logs/train_pf-%j.log
+
+# A/B against run1 (sp4_bulk_rmse 0.0177): identical recipe, --pushforward the
+# only difference. Same seed, same --checkpoint-every 5, so "best of 8 SP4
+# evaluations" means the same thing in both runs.
+uv run train \
+    --epochs 40 \
+    --batch-size 8 \
+    --learning-rate 3e-4 \
+    --cosine \
+    --weight-decay 1e-5 \
+    --grad-clip 1.0 \
+    --hidden-channels 64 \
+    --num-blocks 4 \
+    --checkpoint-every 5 \
+    --pushforward \
+    --out weights/run-pf \
+    --wandb-mode disabled

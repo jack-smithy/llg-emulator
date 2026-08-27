@@ -27,6 +27,7 @@ cell grid) is not a harmless approximation: it gets the field wrong by >100%.
 
 import logging as _logging
 from collections.abc import Callable
+from functools import lru_cache
 from pathlib import Path
 
 import equinox as eqx
@@ -79,6 +80,8 @@ class DemagField(eqx.Module):
     N: Array  # (3, 3, *) demag tensor (rfft); buffer, not trained
     Ms: float = eqx.field(static=True)
     n: tuple = eqx.field(static=True)  # (nx, ny) mesh *cell* counts; nodes are n+1
+    dx: tuple = eqx.field(static=True)  # cell size; the field depends on it
+    p: int = eqx.field(static=True)  # neuralmag quadrature order
     nondim: bool = eqx.field(static=True)
     to_cell: Callable = eqx.field(static=True)
     to_node_w: Callable = eqx.field(static=True)
@@ -96,8 +99,10 @@ class DemagField(eqx.Module):
         if len(self.n) != 2:
             raise ValueError(f"expected a 2D cell count (nx, ny), got {self.n}")
         self.Ms = float(Ms)
+        self.dx = tuple(float(x) for x in dx)
+        self.p = int(p)
         self.nondim = nondim
-        self.N, self.to_cell, self.to_node_w = _build_demag(self.n, dx, self.Ms, p)
+        self.N, self.to_cell, self.to_node_w = _build_demag(self.n, self.dx, self.Ms, p)
 
     def __call__(self, m: Array) -> Array:
         # (3, nx+1, ny+1) -> (nx+1, ny+1, 3) node-vector layout neuralmag expects.
@@ -115,3 +120,18 @@ class DemagField(eqx.Module):
             h = h / self.Ms
 
         return jnp.moveaxis(h, -1, 0)  # (3, nx+1, ny+1)
+
+
+@lru_cache(maxsize=8)
+def demag_for(n: tuple, dx: tuple, Ms: float = 1.0, p: int = 20) -> DemagField:
+    """`DemagField` for one mesh, built at most once per process.
+
+    The tensor is what makes the model mesh-specific, so evaluating on a mesh
+    other than the training one means building another one. Caching matters
+    twice over: the build is O(minutes) when `.nm_cache` misses, and the
+    generated projection kernels are *static* pytree fields, so a fresh
+    `DemagField` per call would retrigger jit compilation on every rollout.
+
+    Args must be hashable (tuples, not lists) — `lru_cache` keys on them.
+    """
+    return DemagField(n, dx, Ms=Ms, p=p)

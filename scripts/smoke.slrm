@@ -1,0 +1,24 @@
+#!/bin/bash
+#
+#SBATCH -J smoke
+#SBATCH --time="0:20:00"
+#SBATCH --gres=gpu:1g.24gb:1
+#SBATCH --requeue
+#SBATCH -o logs/smoke-%j.log
+
+# 2 epochs on 8 train / 4 val trajectories: checks the data path, the SP4
+# cross-mesh rollout and the checkpoint round-trip end to end.
+set -e
+uv run train \
+    --epochs 2 \
+    --batch-size 8 \
+    --learning-rate 3e-4 \
+    --hidden-channels 16 \
+    --num-blocks 2 \
+    --checkpoint-every 1 \
+    --max-train-trajectories 8 \
+    --max-val-trajectories 4 \
+    --out results/smoke \
+    --wandb-mode disabled
+
+uv run python -m llg_emulator.evaluate --model-path results/smoke --tag best --max-trajectories 2

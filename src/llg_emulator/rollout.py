@@ -21,6 +21,9 @@ def rollout(stepper_fn, n: int, *, include_init: bool = False):
     return rollout_fn
 
 
+s0_default = jnp.array([0.0])
+
+
 def rollout_trajectory(
     model: LLGEmulator,
     m_true,
@@ -30,11 +33,15 @@ def rollout_trajectory(
     stride: int = 1,
     include_init: bool = True,
 ) -> Array:
-    """Unroll the model from m_true[0], taking `stride`-sized steps.
+    """Unroll the model from m_true[0], one model call per `stride` reference frames.
 
-    Each model call advances `stride` base steps (s_enc = log2(stride)); it makes
-    (len-1)//stride calls with include_init (matching frames 0, stride, 2*stride…),
-    or len//stride without. stride=1 reproduces the original one-step rollout.
+    `s0` is the step-size encoding the model is conditioned on and `stride` is how
+    many frames of `m_true` one call covers; the caller owns both because only it
+    knows the trajectory's `dt` (see `data.Trajectory.s_enc`). They have to agree:
+    `s0 = log2(stride * dt / BASE_STEP_TIME)`.
+
+    Makes `(len - 1) // stride` calls with `include_init` (lining up with frames
+    0, stride, 2*stride, ...), or `len // stride` without.
     """
     assert H_ext.shape == (3,)
     cond = jnp.concat((H_ext, s0))
@@ -42,7 +49,7 @@ def rollout_trajectory(
     n = m_true.shape[0] - 1 if include_init else m_true.shape[0]
     return rollout(
         lambda x: model(x, cond),
-        n=n,
+        n=n // stride,
         include_init=include_init,
     )(m_true[0])
 
@@ -52,11 +59,8 @@ def rollout_trajectories(
     m_true,
     H_ext,
     *,
-    stride: int = 1,
     include_init: bool = True,
 ):
     return jax.vmap(
-        lambda m, h: rollout_trajectory(
-            model, m, h, stride=stride, include_init=include_init
-        )
+        lambda m, h: rollout_trajectory(model, m, h, include_init=include_init)
     )(m_true, H_ext)

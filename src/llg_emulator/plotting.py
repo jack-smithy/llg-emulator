@@ -92,6 +92,7 @@ def plot_m_means(m_avg, m_avg_pred):
         axs[i].plot(tt, m_avg_pred[:, i], label="pred")
         axs[i].set_ylim(-1, 1)
         axs[i].set_title(labels[i])
+    axs[0].legend()  # labels were set but never drawn
     return fig, axs
 
 

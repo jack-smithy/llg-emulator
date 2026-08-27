@@ -1,16 +1,24 @@
 #!/bin/bash
 #
 #SBATCH -J train
-#SBATCH --time="1:00:00"
+#SBATCH --time="8:00:00"
 #SBATCH --gres=gpu:1g.24gb:1
 #SBATCH --requeue
-#SBATCH -o logs/train.log
+#SBATCH -o logs/train_small.log
 
+# data/{train,val}/<variant>/ is picked up automatically; val/sp4 is held out of
+# the val loss and used as the rollout benchmark (different mesh, OOD field).
 uv run train \
-    --epochs 16 \
+    --epochs 12 \
     --batch-size 8 \
-    --learning-rate 1e-4 \
-    --out results \
-    --size large \
-    --checkpoint-every 4 \
-    --wandb-mode disabled
+    --learning-rate 3e-4 \
+    --cosine \
+    --weight-decay 1e-5 \
+    --grad-clip 1.0 \
+    --hidden-channels 64 \
+    --num-blocks 4 \
+    --checkpoint-every 5 \
+    --out weights/run-small \
+    --wandb-mode disabled \
+    --max-train-trajectories 128 \
+    --max-val-trajectories 64 \

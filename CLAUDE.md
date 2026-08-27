@@ -17,18 +17,19 @@ JAX + Equinox. GPU (CUDA 12), Python 3.13, managed with `uv`.
 
 ```
 src/llg_emulator/
-  __init__.py       CLI + training loop (entrypoint: main); saves a ckpt every --checkpoint-every
-  config.py         DATA_ROOT + dataset_dir(split, size) path helper
+  train.py          CLI + training loop (entrypoint: main); saves a ckpt every --checkpoint-every
+  __init__.py       deliberately empty - keeps importing a submodule cheap (see Conventions)
+  config.py         DATA_ROOT + variant_dirs(split) / sp4_path() discovery
   train_config.py   TrainConfig dataclass (run hyperparameters) + sp4_path property
-  data.py           trajectory loading (eager) + grain dataloader
-  model.py          LLGEmulator (ResNet backbone + FiLM conditioning) + ModelConfig
-  physics.py        DemagField — exact demag field via neuralmag (frozen, non-trainable)
+  data.py           memory-mapped trajectories + grain step-pair source
+  model.py          LLGEmulator (ResNet + FiLM) + ModelConfig + with_mesh retargeting
+  physics.py        DemagField — exact demag via neuralmag (frozen) + cached demag_for
   training.py       one-step MSE loss + jitted update, cosine sched, trainable filter
-  io.py             save_model / load_model (+ .vtr writer)
+  io.py             save_model / load_model (trainable leaves only) + self-check (+ .vtr writer)
   rollout.py        autoregressive trajectory unroll (lax.scan)
-  metrics.py        MSE, correlation, bulk magnetization, sp4 rollout RMSE
+  metrics.py        MSE, correlation, streaming rollout_metrics + bulk_rmse (headline)
   plotting.py       matplotlib (used by the train loop) + plotly (for wandb; currently unused)
-  evaluate.py       standalone rollout-correlation eval of a saved checkpoint
+  evaluate.py       standalone eval: SP4 rollout + val correlation + --vtr ParaView export
   symmetry.py       D4xZ2 symmetry group (exact augmentation), demag-equivariance self-check
 src/datagen/
   generate.py       training-data generation (neuralmag LLG solver) + test_generate.py smoke test
@@ -40,6 +41,7 @@ weights/            saved models. Legacy: best.eqx / hc64_160.eqx / best_dt.eqx 
                     ModelConfig. New runs write a directory: <out>/{epoch_N,weights}.eqx + metadata.json
 scripts/run         local run (pins CUDA_VISIBLE_DEVICES, `uv run train`)
 scripts/run.slrm    SLURM batch script (sbatch scripts/run.slrm, via `make train`)
+scripts/smoke.slrm  2-epoch end-to-end check (train -> SP4 rollout -> reload -> eval)
 scripts/generate.slrm  SLURM datagen job
 ```
 
@@ -78,39 +80,79 @@ projections** (treating the 256×256 nodal grid as a 256×256 cell grid, which i
 when the data was cell-based) is not a small approximation — it gets the field wrong by >100%.
 `DemagField(n, dx, …)` therefore takes the **cell** count `(nx, ny)` and returns `(3, nx+1, ny+1)`.
 
-**Data** (`data.py`) — each sample dir is `sample-{i:05d}-of-{n:05d}/` with `m.npy`
-`(t, 256, 256, 3)` float32 (**nodal**, see above) + `metadata.json` (`n` = cell counts `[255,255]`,
-`dx`, `dt`, `t_tot`, `material{Ms,A,alpha}`, `H_ext` in A/m, `init`, `key`). Frames are uniformly
-spaced at one solver step `dt` (10 ps): 101 frames over 1 ns. `_frames_to_cf` transposes to
-`(t, c, h, w)` float32; `H_ext` is normalised by `Ms`.
+**Data** (`data.py`) — the layout is `data/<split>/<variant>/sample-{i:05d}-of-{n:05d}/`
+with `m.npy` + `metadata.json`. **Every subdirectory of a split is a variant** and is picked up
+automatically — `config.variant_dirs(split)` enumerates them, so adding a variant needs no code
+change. Current contents:
 
-**Loading is eager.** `load_trajectories` reads every `m.npy` fully into host RAM with a
-`ThreadPoolExecutor`, so a source costs ~79 MB per trajectory (16 train + 4 val ≈ 1.6 GB for the
-`check` set; the training job peaked at ~5.5 GB RSS). `LLGStepperSource` then builds a flat
-`(traj, t, stride)` index over all `(m_t, m_{t+s})` pairs for the requested `strides` and returns
-`{m0, m1, H, s0}` with `s0 = log2(s)` (float32). `load_trajectory` loads one *full* trajectory for
-single-trajectory eval (SP4/bulk rollout). `dataloader_factory` returns a `seed -> IterDataset`
-closure (grain: shuffle indices lazily, batch, drop remainder; it stacks each dict key, so `s0`
-batches to `(b,)`). If a future split doesn't fit in RAM this is the thing to make streaming.
+| split / variant | trajectories | mesh `n` (cells) | `m.npy` shape (nodal) |
+|---|---|---|---|
+| `train/fixed_geo` | 512 | (256, 256) | (101, 257, 257, 3) |
+| `val/fixed_geo`   | 256 | (256, 256) | (101, 257, 257, 3) |
+| `val/sp4`         | 1   | **(100, 25)** | (101, 101, 26, 3) |
+| `val/large`       | 1   | **(2000, 2000)** | (101, 2001, 2001, 3) |
 
-**Training** (`training.py` + `__init__.py`) — the objective is a plain **one-step MSE**
-(`loss_fn`) on `(m_t, m_{t+s})` pairs; `__init__.py` builds the source with `strides=[1]`, so
-`s_enc` is constantly 0 today. `update_fn` is `filter_jit` with donation; the demag tensor leaf is
+`metadata.json` carries `n` (cell counts), `dx`, `dt`, `t_tot`, `material{Ms,A,alpha}`, `H_ext`
+in A/m, `init`, `key`. Frames are uniformly spaced at one solver step `dt` (10 ps): 101 frames
+over 1 ns. `H_ext` is normalised by `Ms`; `_frames_to_cf` transposes a whole trajectory to
+`(t, c, h, w)` float32, `_frame_to_cf` does one frame.
+
+**The benchmark variants (`config.BENCHMARK_VARIANTS` = `sp4`, `large`) are held out of the val
+loss.** That is not just convention — each sits on its own mesh (100x25 and 2000x2000 cells against
+the training set's 256x256), so neither *can* share a batch with the other val trajectories. `sp4`
+tests field extrapolation plus a reversal; `large` is 61x the training area and tests domain-size
+transfer alone. Adding a variant to `data/val/` that is *not* listed in `BENCHMARK_VARIANTS` and is
+not on the training mesh will make training fail at startup on the mixed-mesh guard.
+
+**Loading is memory-mapped.** The dataset is 59 GB over 769 trajectories; one training sample
+touches two frames (~0.8 MB). `open_trajectory` mmaps `m.npy` and reads the metadata without
+touching the frames (mapping all 769 costs ~30 MB RSS), and `LLGStepperSource.__getitem__`
+transposes the two frames it needs on demand — the OS page cache does the caching. `load_trajectory`
+still reads one *full* trajectory eagerly, for single-trajectory eval where every frame is needed.
+
+`LLGStepperSource` builds a flat `(traj, t, stride)` index over all `(m_t, m_{t+s})` pairs for the
+requested `strides` and returns `{m0, m1, H, s0}`. **`s0` is in physical units**:
+`s0 = log2(stride * dt / BASE_STEP_TIME)`, so `s0 == 0` is one 10 ps step whatever `dt` a future
+variant is generated at. The source **requires one mesh across all its trajectories** (grain stacks
+samples into a batch; a batch of mixed grids has no shape) and raises naming the fix if a split
+mixes them. `dataloader_factory(source, batch_size)` returns a `seed -> IterDataset` closure
+(grain: shuffle lazily, batch, drop remainder; it stacks each dict key, so `s0` batches to `(b,)`).
+
+**Mesh invariance.** The backbone is fully convolutional, so it transfers to any grid unchanged;
+the demag tensor is the *only* mesh-shaped part of the model. `model.with_mesh(model, n, dx)`
+returns the same weights with a demag rebuilt for `(n, dx)`, and refuses a different `dx` — a
+different cell size changes the physics per cell, which no rebuild fixes. `physics.demag_for` is
+`lru_cache`d, which matters twice: the build is O(minutes) on an `.nm_cache` miss, and the generated
+projection kernels are *static* pytree fields, so a fresh `DemagField` per call would retrigger jit
+compilation on every rollout. Eval paths run one trajectory at a time and retarget per trajectory,
+so **mixed-mesh evaluation already works**; mixed-mesh *training* would need one batch stream and
+one demag per mesh, and is not implemented.
+
+**Training** (`training.py` + `train.py`) — the objective is a plain **one-step MSE**
+(`loss_fn`) on `(m_t, m_{t+s})` pairs; `train.py` builds the source with `strides=[1]`, so
+`s_enc` is constantly 0 today. Val uses `with_mesh`, so a val split on another mesh still scores.
+`update_fn` is `filter_jit` with donation; the demag tensor leaf is
 kept out of the gradient by `trainable_filter`. Optimiser: `clip_by_global_norm` + `adamw`, on a
 warmup+cosine schedule (`make_schedule`) when `--cosine` is passed, otherwise a constant LR.
 Val is the same one-step MSE on the val split. Every `checkpoint_every` epochs the loop rolls the
 model out over the SP4 trajectory (`metrics.bulk_magnetization`), writes
 `<out>/rollout_epoch_{i}.png`, and saves `<out>/epoch_{i}.eqx`; the final model goes to
-`<out>/weights.eqx`. `save_model` = `eqx.tree_serialise_leaves` + a `metadata.json` sidecar
-(`hidden_channels`, `num_blocks`, `cond_dim`) in the same directory; `load_model(path, demag, key,
-tag)` rebuilds the skeleton from it (`cond_dim` defaults to 3 for pre-timestep sidecars).
-There is **no best-checkpoint selection** — every saved epoch is kept, and the last one is
-`weights.eqx`. The rollout-k loss, `--strides`/`--augment` flags and `RolloutSource` described in
+`<out>/weights.eqx`. `save_model` serialises **only the trainable leaves** (`eqx.partition` on
+`trainable_filter`) plus a `metadata.json` sidecar (`hidden_channels`, `num_blocks`, `cond_dim`)
+in the same directory; `load_model(path, demag, key, tag)` rebuilds the skeleton from the sidecar,
+deserialises into the filtered tree and `eqx.combine`s the caller's `demag` back in (`cond_dim`
+defaults to 3 for pre-timestep sidecars). The frozen demag tensor is **not** written — it was 78%
+of a 255x255 checkpoint (6.06 MB -> 1.36 MB) and is rebuilt exactly from the mesh on load, so
+checkpoints saved before this change (full-tree) no longer load. `uv run python -m llg_emulator.io`
+round-trips a small model as a self-check.
+Every `checkpoint_every` epochs the SP4 bulk RMSE is computed and logged as `sp4/bulk_rmse`, and
+the best-so-far model is saved as `<out>/best.eqx` (`wandb.summary.best_sp4_bulk_rmse` /
+`best_epoch`). Every checkpointed epoch is *also* kept, and the last one is `weights.eqx`. The rollout-k loss, `--strides`/`--augment` flags and `RolloutSource` described in
 earlier versions of this file no longer exist in `training.py`.
 
 ## Running
 
-Single pipeline — `uv run train` (entrypoint `main` in `__init__.py`). Logs to wandb and writes
+Single pipeline — `uv run train` (entrypoint `main` in `train.py`). Logs to wandb and writes
 checkpoints + SP4 rollout plots into the `--out` **directory**.
 
 ```bash
@@ -118,22 +160,40 @@ uv sync
 make train           # == sbatch scripts/run.slrm  (16 ep smoke run -> weights/test/)
 scripts/run          # local run, pins CUDA_VISIBLE_DEVICES
 ```
-Direct: `uv run train --epochs 60 --batch-size 8 --learning-rate 3e-4 --cosine
+Direct: `uv run train --epochs 40 --batch-size 8 --learning-rate 3e-4 --cosine
 --weight-decay 1e-5 --grad-clip 1.0 --hidden-channels 64 --num-blocks 4
---checkpoint-every 5 --out weights/run1 --size large --wandb-mode disabled`. Flags:
-`--cosine` warmup+cosine schedule (otherwise constant LR); `--checkpoint-every N` runs the SP4
-rollout eval, saves `epoch_N.eqx` and writes `rollout_epoch_N.png` every N epochs; `--out` is a
-**directory** (`save_model` writes `<out>/<tag>.eqx` + `<out>/metadata.json`) — passing a `.eqx`
-*file* path makes a directory with that name, and crashes outright if a file already sits there.
-`--epochs`, `--batch-size`, `--learning-rate` are required. `--size` is accepted but currently
-ignored by `config.dataset_dir` (see Issues). One epoch of the `check` set (16 train / 4 val
-trajectories, batch 8, hidden 64) is ~21 s on a `1g.24gb` MIG slice including the per-epoch SP4
-rollout eval.
+--checkpoint-every 5 --out weights/run1 --wandb-mode disabled`. Flags: `--cosine` warmup+cosine
+schedule (otherwise constant LR); `--checkpoint-every N` runs the SP4 rollout eval, logs
+`sp4/bulk_rmse`, saves `epoch_N.eqx` (plus `best.eqx` on improvement) and writes
+`rollout_epoch_N.png`; `--max-train-trajectories` / `--max-val-trajectories` cap how many
+trajectories each split maps, for smoke runs; `--out` is a **directory** (`save_model` writes
+`<out>/<tag>.eqx` + `<out>/metadata.json`) — passing a `.eqx` *file* path makes a directory with
+that name, and crashes outright if a file already sits there. `--epochs`, `--batch-size`,
+`--learning-rate` are required. **The mesh comes from the training data**, not from a flag.
 
-To reload + evaluate a saved model: `io.load_model(dir, demag, key, tag="weights")` (the demag must
-be built for the same mesh), then `metrics.bulk_magnetization(model, sp4_path)` or
-`metrics.sp4_rollout_rmse(model, source)`. `scripts/eval` / `scripts/eval.slrm` still point at the
-old `results/weights/best.eqx` layout and need updating before they run.
+`sbatch scripts/smoke.slrm` is the end-to-end check: 2 epochs on 8 train / 4 val trajectories, the
+SP4 cross-mesh rollout, a `best.eqx` reload and an eval pass. ~40 s on a `1g.24gb` MIG slice; output
+in `logs/smoke.log`.
+
+To reload + evaluate a saved model: `io.load_model(dir, key, tag="best")` — the checkpoint is
+self-describing (the sidecar carries `mesh_n`/`mesh_dx`/`demag_p`, so the demag is rebuilt for you;
+pass `n=` to retarget another mesh). Then `metrics.bulk_magnetization(model, sp4_path())` and
+`metrics.bulk_rmse`. `sbatch scripts/eval.slrm`, or `scripts/eval <dir> <tag>`, runs
+`llg_emulator.evaluate`: SP4 bulk RMSE + plot, plus rollout correlation over val trajectories.
+Benchmarks run through `metrics.rollout_metrics`, which streams the rollout one frame at a time
+(bulk ⟨m⟩(t) plus per-frame correlation) — `val/large` is 4.85 GB, so its full history does not fit
+on the device. `--vtr` stays SP4-only for the same reason: the three `large` series would be 14.5 GB.
+`--vtr` additionally writes `<out>/vtr/sp4_{reference,predicted,error}.pvd` — one `.vtr` per
+frame plus a PVD collection carrying the physical time, so ParaView scrubs the 1 ns directly.
+`m` is nodal and `io.write_vtr` writes cell data, so the nodal counts are passed as the cell
+counts: each node renders as one voxel, offset half a cell. Nothing is interpolated.
+
+### Current results
+
+`BENCHMARKS.md` has the numbers. Headline: **`run1`, sp4_bulk_rmse 0.0177** (hidden 64,
+4 blocks, 40 epochs, one-step loss, cosine, lr 3e-4) — trained on 256x256, evaluated on SP4's
+100x25 mesh, val one-step MSE 2.26e-06 against an 8.0e-3 trivial baseline. Nothing has overfit
+at 40 epochs on 512 trajectories, so the capacity and epoch ceilings below no longer apply.
 
 ### Best recipe & results (SP4) — historical
 
@@ -183,38 +243,43 @@ currently ignores its `size` argument). 16 train / 4 val trajectories + 1 SP4 re
   `(t, 3, nx, ny)` for trajectories — where `(nx, ny)` is the **nodal** grid, i.e. `mesh_n + 1`
   in each direction. `H_ext` is a plain `(3,)` vector; the FiLM input is `cond = [H_ext/Ms, s_enc]`.
 - **Nondimensionalisation**: all fields are in units of `Ms` (both `H_ext` input and demag output).
+- **Keep `__init__.py` empty.** Anything at package-root scope runs on *every* submodule import:
+  when the training loop lived there, `from llg_emulator.config import DATA_ROOT` cost 1.2 s and
+  pulled in wandb, matplotlib, plotly, optax and neuralmag. Entrypoints live in their own modules
+  (`train.py`, `evaluate.py`), which is also where the `jax.config.update` side effects belong.
 - Don't launch GPU/training jobs from here — CPU tasks (import checks, data inspection) are fine.
 
 ## Known issues / cleanup
 
 Real, and documented so they aren't mistaken for intent.
 
-1. **No best-checkpoint selection.** The loop saves *every* `--checkpoint-every` epoch plus a
-   final `weights.eqx`; nothing tracks the SP4 metric to keep the best one, and nothing prunes the
-   per-epoch files (16 epochs ≈ 100 MB). The SP4 rollout is only rendered to a PNG — its RMSE is
-   never computed or logged.
+1. **Checkpoints are never pruned.** The loop saves *every* `--checkpoint-every` epoch plus
+   `best.eqx` and `weights.eqx` (1.36 MB each at 256x256, hidden 64). Best-checkpoint selection on
+   `sp4/bulk_rmse` now exists; pruning the per-epoch files does not.
 
-2. **One-step loss ⇒ rollout drift.** With the rollout-k loss gone, a 16-epoch run reaches a val
-   one-step MSE of 2.8e-4 (vs 8.0e-3 for the trivial `m_{t+1} = m_t` predictor — so the step map is
-   genuinely learned), but the 100-step SP4 unroll still precesses and drifts out of plane. That is
-   compounding error, matching Finding 2 below; more epochs + `--cosine` and/or restoring a
-   multi-step loss is the fix, not a bug in the pipeline.
+2. **~~One-step loss ⇒ rollout drift.~~ Largely resolved by data + budget.** The 16-epoch run this
+   issue described drifted out of plane over the 100-step unroll. `run1` (40 epochs, 512
+   trajectories, cosine) reaches **sp4_bulk_rmse 0.0177** with the plain one-step loss and tracks the
+   reference through the switch and the full precession tail — see `BENCHMARKS.md`. The rollout-k
+   loss is worth re-testing but is no longer needed for a stable unroll. Note `sp4_bulk_rmse` is
+   *not* monotonic in the val loss (0.053 -> 0.123 between epochs 10 and 20 while both losses fall),
+   which is why best-checkpointing on it matters.
 
-3. **`main.ipynb` is stale.** It calls `LLGEmulator(key=key)` (constructor now requires
-   `config=ModelConfig()`) and imports `correlation_epoch` from `llg_emulator.training` (it lives in
-   `metrics`). It errors as-is. It's scratch — regenerate or delete rather than trust it.
+3. **Mixed-mesh training is not supported.** `LLGStepperSource` raises if one split mixes meshes,
+   because a batch of mixed grids has no shape. Evaluation is already mesh-agnostic (one trajectory
+   at a time + `with_mesh`). When a variant on a second mesh arrives, the fix is one batch stream
+   and one `demag_for` per mesh, interleaved — not a change to the model.
 
-4. **Dead code.** No callers: `metrics.nRMSE`, `metrics.correlation_epoch`,
-   `plotting.plot_learning_curve` / `plot_rollout_metric`, and — now that the train loop logs the
-   matplotlib figure — both plotly helpers (`plot_m_means_plotly` is only referenced from a
-   commented-out line in `__init__.py`). `io.write_vtr` is also unused. Delete unless you're about
-   to use them.
+4. **`main.ipynb` is stale.** It loads `data/256x256x1/…`, a path that no longer exists, and calls
+   `LLGEmulator(key=key)` (the constructor requires `config=ModelConfig()`). It errors as-is. It's
+   scratch — regenerate or delete rather than trust it.
 
-5. **`config.dataset_dir` ignores `size`.** It returns `DATA_ROOT / split` regardless, so
-   `--size {small,med,large}` currently selects nothing; `TrainConfig.large_scale_path` points at a
-   `large-scale` split that does not exist (its only caller is commented out in `__init__.py`).
+5. **Dead code.** No callers: `metrics.nRMSE`, `metrics.MSE`, `rollout.rollout_trajectories`,
+   `plotting.plot_corr_plotly` / `plot_learning_curve` / `plot_rollout_metric`, and
+   the whole of `symmetry.py` (the `--augment` flag it served is gone; its `_demo` demag-equivariance
+   self-check is the part worth keeping). `plot_m_means_plotly` and `TrainConfig.large_scale_path`
+   are referenced only from commented-out blocks in `train.py`. Delete unless you're about to use
+   them.
 
-6. **`ModelConfig.activation` isn't JSON-serializable.** `asdict(model_config)` (logged to wandb
-   config) contains the `gelu` function object. wandb tolerates it (stores a repr), but any code
-   that `json.dumps` the config will raise. Store the activation as a name string if you need clean
-   serialisation.
+6. **`README.md` is empty** and `pyproject.toml` still carries the `uv init` placeholder
+   description. `.ruff_cache/` is in the tree but ruff is not a dependency.

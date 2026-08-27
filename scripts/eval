@@ -1,4 +1,2 @@
-CUDA_VISIBLE_DEVICES=3 uv run src/llg_emulator/evaluate.py \
-    --seed 0 \
-    --size small \
-    --model-path results/weights/best.eqx
+#!/usr/bin/env bash
+uv run python -m llg_emulator.evaluate --model-path "${1:-weights/run1}" --tag "${2:-best}"

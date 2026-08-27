@@ -5,10 +5,11 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import jax.tree_util as jtu
 from jaxtyping import Array, PRNGKeyArray
 from pdequinox.arch import ClassicResNet
 
-from llg_emulator.physics import DemagField
+from llg_emulator.physics import DemagField, demag_for
 
 
 class FiLM(eqx.Module):
@@ -46,11 +47,11 @@ class ModelConfig:
     activation: Callable = jax.nn.gelu
     # mesh *cell* counts (2D thin film); the nodal fields the solver writes -
     # and the model consumes - are (mesh_n[0] + 1, mesh_n[1] + 1). See physics.py.
-    mesh_n: tuple = (255, 255)
+    mesh_n: tuple = (256, 256)
     mesh_dx: tuple = (5e-9, 5e-9, 3e-9)
     demag_p: int = 20
-    # FiLM conditioning width: 3 (H_ext only) or 4 (H_ext + log step-size).
-    # cond_dim=3 reproduces the original fixed-dt model; 4 is timestep-conditioned.
+    # FiLM conditioning: [H_ext / Ms (3), s_enc (1)]. Every call site appends
+    # s_enc unconditionally, so 4 is the only width the code can actually run.
     cond_dim: int = 4
 
 
@@ -78,6 +79,16 @@ class LLGEmulator(eqx.Module):
             activation=config.activation,
             boundary_mode="neumann",
             key=model_key,
+        )
+        # Zero the projection so `dm` starts at 0 and the model *is* the identity
+        # map at step 0 -- the target m_{t+1} is within ~1e-2 of m_t, so a random
+        # projection starts the run far from the answer. Mirrors the FiLM zero-init
+        # above: without both, that one is wasted.
+        params, rest = eqx.partition(self.backbone.projection, eqx.is_inexact_array)
+        self.backbone = eqx.tree_at(
+            lambda b: b.projection,
+            self.backbone,
+            eqx.combine(jtu.tree_map(jnp.zeros_like, params), rest),
         )
         self.n_pts = config.num_blocks + 1  # post-lifting + one per block
         # FiLM conditions on H_ext (3) plus, when cond_dim==4, a log step-size
@@ -121,10 +132,32 @@ class LLGEmulator(eqx.Module):
         return dm
 
     def __call__(self, m0: Array, cond: Array) -> Array:
-        """Predict m at t + stride base steps, given the conditioning vector
-        `cond` of length `cond_dim`: `[H_ext / Ms]` for cond_dim==3, or
-        `[H_ext / Ms, log2(stride)]` for cond_dim==4 (log2(stride)=0 -> one
-        base dt, the original one-step map)."""
+        """Predict m one step of size `2**s_enc * 10 ps` ahead, given
+        `cond = [H_ext / Ms (3), s_enc (1)]` (s_enc = 0 -> one base step).
+
+        Mesh-agnostic in the spatial dims: the backbone is fully convolutional
+        and `self.demag` supplies the only mesh-shaped operator. Use `with_mesh`
+        to retarget a trained model at a different grid."""
         dm = self.forward(m0=m0, cond=cond)
         m1 = self.step(m0=m0, dm=dm)
         return m1
+
+
+def with_mesh(model: LLGEmulator, n, dx) -> LLGEmulator:
+    """Same weights, demag rebuilt for the mesh `(n, dx)`.
+
+    The backbone is fully convolutional, so it transfers to any grid unchanged;
+    the demag tensor is the one mesh-shaped part and has to be rebuilt. `dx` must
+    match the mesh the weights were trained on -- a different cell size changes
+    the physics per cell, which no amount of rebuilding fixes.
+    """
+    n, dx = tuple(int(x) for x in n), tuple(float(x) for x in dx)
+    if dx != model.demag.dx:
+        raise ValueError(
+            f"cell size {dx} != the model's {model.demag.dx}; the learned step map "
+            f"is only valid at the cell size it was trained on."
+        )
+    if n == model.demag.n:
+        return model
+    demag = demag_for(n, dx, model.demag.Ms, model.demag.p)
+    return eqx.tree_at(lambda m: m.demag, model, demag)

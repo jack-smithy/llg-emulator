@@ -133,6 +133,7 @@ def generate_sample(
     n,
     dx,
     t_tot,
+    dt,
 ) -> None:
     """Generate and save sample `index` (1-based). Its key depends only on
     `(seed, n_samples, index)`, so workers need no shared state and how the
@@ -144,7 +145,7 @@ def generate_sample(
     params = SimulationParams(
         n=n,
         dx=dx,
-        dt=10e-12,
+        dt=dt,
         t_tot=t_tot,
         material={"Ms": 8e5, "A": 1.3e-11, "alpha": 0.02},
         H_ext=random_H_ext(key_h),
@@ -190,45 +191,65 @@ def generate_sp4(
     np.save(save_dir / "m.npy", ms)
 
 
-def _parse_args():
+def main_fixed_geo():
+
     parser = ArgumentParser()
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--n-samples", type=int, required=True)
     parser.add_argument("--split", type=str, required=True)
     parser.add_argument("--start", type=int, default=1)
-    return parser.parse_args()
-
-
-def main():
-
-    args = _parse_args()
+    args = parser.parse_args()
 
     key = jr.PRNGKey(args.seed)
 
-    base_dir: Path = Path("data/check")
-    n: Sequence[int] = (255, 255)
+    base_dir: Path = Path("data")
+    n: Sequence[int] = (2000, 2000)
     dx: Sequence[float] = (5e-9, 5e-9, 3e-9)
     t_tot: float = 1e-9
+    dt: float = 10e-12
 
-    save_dir = base_dir / args.split
+    save_dir = base_dir / args.split / "xlarge"
 
     keys = jr.split(key, args.n_samples)
     for index in tqdm(range(args.start, args.n_samples + args.start)):
-        generate_sample(keys[index], args.n_samples, index, save_dir, n, dx, t_tot)
+        generate_sample(keys[index], args.n_samples, index, save_dir, n, dx, t_tot, dt)
+
+
+def main_variable_geo():
+
+    parser = ArgumentParser()
+    parser.add_argument("--seed", type=int, required=True)
+    parser.add_argument("--n-samples", type=int, required=True)
+    parser.add_argument("--split", type=str, required=True)
+    parser.add_argument("--start", type=int, default=1)
+    args = parser.parse_args()
+
+    key = jr.PRNGKey(args.seed)
+
+    base_dir: Path = Path("data")
+    dx: Sequence[float] = (5e-9, 5e-9, 3e-9)
+    t_tot: float = 1e-9
+    dt: float = 10e-12
+
+    save_dir = base_dir / args.split / "fixed_geo"
+
+    keys = jr.split(key, args.n_samples)
+    for index in tqdm(range(args.start, args.n_samples + args.start)):
+        sample_key, geo_key = jr.split(keys[index])
+        n = jr.randint(geo_key, (2,), minval=16, maxval=512, dtype=jnp.int16).tolist()
+        generate_sample(sample_key, args.n_samples, index, save_dir, n, dx, t_tot, dt)
 
 
 def main_sp4():
 
-    args = _parse_args()
+    key = jr.PRNGKey(69)
 
-    key = jr.PRNGKey(args.seed)
-
-    base_dir: Path = Path("data/check")
-    n: Sequence[int] = (255, 255)
+    base_dir: Path = Path("data")
+    n: Sequence[int] = (100, 25)
     dx: Sequence[float] = (5e-9, 5e-9, 3e-9)
     t_tot: float = 1e-9
 
-    save_dir = base_dir / args.split
+    save_dir = base_dir / "val" / "sp4"
 
     generate_sp4(
         key=key,
@@ -242,4 +263,4 @@ def main_sp4():
 
 
 if __name__ == "__main__":
-    main_sp4()
+    main_fixed_geo()
