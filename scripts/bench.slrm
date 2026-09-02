@@ -1,0 +1,12 @@
+#!/bin/bash
+#SBATCH -J bench
+#SBATCH --time="4:00:00"
+#SBATCH --gres=gpu:full:1
+#SBATCH --mem=64G
+#SBATCH -o logs/bench-%j.log
+# sp4_xlarge is 4001^2: the model peaks at ~30 GB there, so this needs gpu:full.
+set -e
+for R in weights/run1 weights/run-pf; do
+  echo "##### $R"
+  uv run python -m llg_emulator.evaluate --model-path $R --tag best --max-trajectories 6
+done

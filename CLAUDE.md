@@ -88,23 +88,28 @@ change. Current contents:
 | split / variant | trajectories | mesh `n` (cells) | `m.npy` shape (nodal) |
 |---|---|---|---|
 | `train/fixed_geo` | 512 | (256, 256) | (101, 257, 257, 3) |
-| `val/fixed_geo`   | 256 | (256, 256) | (101, 257, 257, 3) |
+| `val/fixed_geo`   | 128 | (256, 256) | (101, 257, 257, 3) |
 | `val/sp4`         | 1   | **(100, 25)** | (101, 101, 26, 3) |
 | `val/large`       | 1   | **(2000, 2000)** | (101, 2001, 2001, 3) |
+| `val/sp4_xlarge`  | 1   | **(4000, 4000)** | (101, 4001, 4001, 3) |
 
 `metadata.json` carries `n` (cell counts), `dx`, `dt`, `t_tot`, `material{Ms,A,alpha}`, `H_ext`
 in A/m, `init`, `key`. Frames are uniformly spaced at one solver step `dt` (10 ps): 101 frames
 over 1 ns. `H_ext` is normalised by `Ms`; `_frames_to_cf` transposes a whole trajectory to
 `(t, c, h, w)` float32, `_frame_to_cf` does one frame.
 
-**The benchmark variants (`config.BENCHMARK_VARIANTS` = `sp4`, `large`) are held out of the val
+**The benchmark variants (`config.BENCHMARK_VARIANTS` = `sp4_xlarge`, `sp4`, `large`) are held out of the val
 loss.** That is not just convention — each sits on its own mesh (100x25 and 2000x2000 cells against
-the training set's 256x256), so neither *can* share a batch with the other val trajectories. `sp4`
-tests field extrapolation plus a reversal; `large` is 61x the training area and tests domain-size
-transfer alone. Adding a variant to `data/val/` that is *not* listed in `BENCHMARK_VARIANTS` and is
+the training set's 256x256), so neither *can* share a batch with the other val trajectories. `sp4_xlarge` (4000x4000, 244x the training area) is the headline and the largest mesh the
+surrogate can evaluate on one GPU — the solver goes further, the model OOMs above it, see
+`datagen.generate.main_sp4`. It stacks field extrapolation, a reversal and the mesh change;
+`sp4` is the same physics on 100x25; `large` is 61x the area
+with an in-distribution field, isolating domain-size transfer. Benchmarks bigger than `large` need
+`gpu:full`, not a MIG slice. Adding a variant to `data/val/` that is *not* listed in `BENCHMARK_VARIANTS` and is
 not on the training mesh will make training fail at startup on the mixed-mesh guard.
 
-**Loading is memory-mapped.** The dataset is 59 GB over 769 trajectories; one training sample
+**Loading is memory-mapped.** The dataset is ~80 GB over 643 trajectories (val was cut from 256 to
+128 on 2026-08-28 to reclaim quota; the survivors are `sample-00001..00128`, names unchanged); one training sample
 touches two frames (~0.8 MB). `open_trajectory` mmaps `m.npy` and reads the metadata without
 touching the frames (mapping all 769 costs ~30 MB RSS), and `LLGStepperSource.__getitem__`
 transposes the two frames it needs on demand — the OS page cache does the caching. `load_trajectory`

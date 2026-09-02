@@ -7,10 +7,15 @@ DATA_ROOT = Path("data")
 # Held-out benchmarks, kept out of the val one-step loss. Each is a single
 # trajectory on a mesh other than the training mesh, so none of them could share
 # a batch with the val set anyway; the point is to measure transfer, not to fit.
-#   sp4   -- 100x25 cells, out-of-distribution applied field
-#   large -- 2000x2000 cells, 61x the training area: the domain-size check
+#   sp4_xlarge -- 4000x4000 cells, SP4's field and s-state init: the headline.
+#                 244x the training area, and the largest mesh the surrogate can
+#                 evaluate on one GPU (see datagen.generate.main_sp4 for the
+#                 measurements -- the solver could go further, the model cannot).
+#   sp4        -- 100x25, the original SP4 geometry
+#   large      -- 2000x2000, in-distribution field: domain-size transfer alone
+# Ordered most-important first; that is the order evaluate.py reports them in.
 SP4_VARIANT = "sp4"
-BENCHMARK_VARIANTS = ("sp4", "large")
+BENCHMARK_VARIANTS = ("sp4_xlarge", "sp4", "large")
 
 
 def variant_dirs(split: str, root: Path = DATA_ROOT, exclude: tuple = ()) -> list[Path]:

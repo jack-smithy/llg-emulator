@@ -41,7 +41,15 @@ class SimulationParams:
             return cls(**json.load(file))
 
 
-def run(params: SimulationParams, init_m_fn: Callable):
+def run(params: SimulationParams, init_m_fn: Callable, out_path: Path | None = None):
+    """Relax, then integrate `t_tot` in `dt` steps, returning `(frames, coords)`.
+
+    With `out_path`, frames are written straight into a memory-mapped `.npy` as
+    they are produced and `None` comes back in place of the array. That is what
+    makes the big meshes reachable: at 10000x10000 one nodal frame is 1.2 GB, so
+    collecting 101 of them in a list and `np.stack`-ing (which copies) needs
+    ~242 GB of host RAM. Streaming holds one frame.
+    """
     # initialize state
     mesh = nm.Mesh(tuple(params.n), tuple(params.dx))
     state = nm.State(mesh)
@@ -63,15 +71,29 @@ def run(params: SimulationParams, init_m_fn: Callable):
     llg.reset()
     state.t = 0.0  # relax() integrates in time; restart the clock for the dynamics
 
-    ms = [np.asarray(state.m.tensor)]
-    for _ in range(round(params.t_tot / params.dt)):
+    n_frames = round(params.t_tot / params.dt) + 1
+    shape = (n_frames, *(int(x) + 1 for x in params.n), 3)  # m is nodal
+    if out_path is None:
+        ms = np.empty(shape, dtype=np.float32)
+    else:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        ms = np.lib.format.open_memmap(
+            out_path, mode="w+", dtype=np.float32, shape=shape
+        )
+
+    ms[0] = np.asarray(state.m.tensor)
+    for i in range(1, n_frames):
         llg.step(params.dt)
-        ms.append(np.asarray(state.m.tensor))
-    ms = np.stack(ms, axis=0)
+        ms[i] = np.asarray(state.m.tensor)
+
     # m is nodal, so report node coordinates
     coords = [np.asarray(c) for c in state.coordinates("n" * mesh.dim)]
 
-    return ms, coords
+    if out_path is None:
+        return ms, coords
+    ms.flush()
+    del ms
+    return None, coords
 
 
 def _nodal_shape(state) -> tuple[int, ...]:
@@ -153,13 +175,11 @@ def generate_sample(
         key=key.tolist(),
     )
 
-    ms, _ = run(params=params, init_m_fn=init_m_fn)
-
     save_dir = base_dir / f"sample-{index:05d}-of-{n_samples:05d}"
     save_dir.mkdir(parents=True, exist_ok=False)
 
+    run(params=params, init_m_fn=init_m_fn, out_path=save_dir / "m.npy")
     params.json_dump(save_path=save_dir)
-    np.save(save_dir / "m.npy", ms)
 
 
 def generate_sp4(
@@ -182,13 +202,15 @@ def generate_sp4(
         key=key.tolist(),
     )
 
-    ms, _ = run(params=params, init_m_fn=lambda c: init_m_s_state(c, inv=False))
-
     save_dir = base_dir / f"sample-{index:05d}-of-{n_samples:05d}"
     save_dir.mkdir(parents=True, exist_ok=False)
 
+    run(
+        params=params,
+        init_m_fn=lambda c: init_m_s_state(c, inv=False),
+        out_path=save_dir / "m.npy",
+    )
     params.json_dump(save_path=save_dir)
-    np.save(save_dir / "m.npy", ms)
 
 
 def main_fixed_geo():
@@ -241,26 +263,31 @@ def main_variable_geo():
 
 
 def main_sp4():
+    """SP4's field and s-state init on a large mesh -> data/val/<name>.
 
-    key = jr.PRNGKey(69)
-
-    base_dir: Path = Path("data")
-    n: Sequence[int] = (100, 25)
-    dx: Sequence[float] = (5e-9, 5e-9, 3e-9)
-    t_tot: float = 1e-9
-
-    save_dir = base_dir / "val" / "sp4"
+    Size ceiling on one GPU (RTX PRO 6000 Blackwell, 96 GB), measured 2026-08-28:
+    the *solver* is not the limit -- 5000x5000 peaks at 14.4 GB of device memory.
+    The surrogate is: a rollout step peaks at 16.2 GB on 3001^2 and 30.2 GB on
+    4001^2 (quadratic), and 5001^2 dies on a single 36 GiB allocation even with
+    XLA_PYTHON_CLIENT_MEM_FRACTION=.95. So 4000 is the largest mesh that can be
+    both simulated and evaluated; going beyond it needs tiled inference.
+    """
+    parser = ArgumentParser()
+    parser.add_argument("--n", type=int, default=4000, help="cells per side")
+    parser.add_argument("--name", type=str, default="sp4_xlarge")
+    parser.add_argument("--seed", type=int, default=69)
+    args = parser.parse_args()
 
     generate_sp4(
-        key=key,
+        key=jr.PRNGKey(args.seed),
         n_samples=1,
         index=1,
-        base_dir=save_dir,
-        n=n,
-        dx=dx,
-        t_tot=t_tot,
+        base_dir=Path("data") / "val" / args.name,
+        n=(args.n, args.n),
+        dx=(5e-9, 5e-9, 3e-9),
+        t_tot=1e-9,
     )
 
 
 if __name__ == "__main__":
-    main_fixed_geo()
+    main_sp4()

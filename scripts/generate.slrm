@@ -1,9 +1,13 @@
 #!/bin/bash
 #
 #SBATCH -J datagen
-#SBATCH --time="10:00:00"
+#SBATCH --time="6:00:00"
 #SBATCH --gres=gpu:full:1
+#SBATCH --mem=128G
 #SBATCH --requeue
-#SBATCH -o logs/generate_xlarge.log
+#SBATCH -o logs/generate-%j.log
 
-uv run src/datagen/generate.py --seed 7 --n-samples 1 --split val
+# --mem matters: the demag tensor is assembled in float64 on the host (~144*N^2
+# bytes) before being cast. Frames themselves stream to disk, so they cost one
+# frame of RAM regardless of mesh -- see datagen.generate.run.
+uv run python -m datagen.generate --n "${N:-4000}" --name "${NAME:-sp4_xlarge}"
