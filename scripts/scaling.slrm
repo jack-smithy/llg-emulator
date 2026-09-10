@@ -1,0 +1,7 @@
+#!/bin/bash
+#SBATCH -J scaling
+#SBATCH --time="1:00:00"
+#SBATCH --gres=gpu:full:1
+#SBATCH --mem=96G
+#SBATCH -o logs/scaling-%j.log
+uv run python analysis/scaling.py

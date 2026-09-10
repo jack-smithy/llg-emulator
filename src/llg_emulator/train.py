@@ -50,6 +50,8 @@ def _parse_args():
     parser.add_argument("--cosine", action="store_true")
     # train from the model's own one-step output (detached), not the true frame
     parser.add_argument("--pushforward", action="store_true")
+    # step sizes to train on, in multiples of the 10 ps base step
+    parser.add_argument("--strides", type=int, nargs="+", default=[1])
     parser.add_argument("--weight-decay", type=float, default=1e-5)
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--hidden-channels", type=int, default=64)
@@ -77,10 +79,13 @@ def main():
     # none could share a batch with the val set -- they are rollout benchmarks
     # instead (see the checkpoint block below, and evaluate.py).
     train_dataset = LLGStepperSource(
-        variant_dirs("train"), max_trajectories=args.max_train_trajectories
+        variant_dirs("train"),
+        strides=args.strides,
+        max_trajectories=args.max_train_trajectories,
     )
     val_dataset = LLGStepperSource(
         variant_dirs("val", exclude=BENCHMARK_VARIANTS),
+        strides=args.strides,
         max_trajectories=args.max_val_trajectories,
     )
 
@@ -187,11 +192,7 @@ def main():
             print(line, flush=True)
 
     save_model(model, model_config, save_path, tag="weights")
-    print(
-        f"done: best sp4_bulk_rmse {best_rmse:.4f} "
-        f"(trivial m_t+1 = m_t baseline for the val one-step MSE is 8.0e-3)",
-        flush=True,
-    )
+    print(f"done: best sp4_bulk_rmse {best_rmse:.4f}", flush=True)
 
     # Domain-size invariance: identical physics and applied field on an 8x wider
     # mesh. The backbone is fully convolutional, so only the demag tensor has to

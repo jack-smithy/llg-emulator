@@ -36,13 +36,23 @@ src/datagen/
 .nm_cache/          cached demag tensors (gitignored), shared by datagen + physics.py
 data/check/         the dataset in use (see Data below)
 main.ipynb          scratch notebook (stale — see Issues)
+main.tex            paper draft (learned integrator framing); compile with pdflatex x2
+figures/            paper figures + make_figures.py / make_scaling.py (CPU-only; read
+                    weights/, vtr/ and analysis/*.json)
+analysis/           one-off measurement scripts + their recorded .json outputs; the source
+                    of most BENCHMARKS.md tables. See analysis/README.md.
+DATA.md             what is in data/, what regenerates it, and what cannot be regenerated
+manifest/           metadata.zip — every sample's metadata.json (the PRNGKeys that
+                    regenerate the dataset); data/ itself is gitignored. See DATA.md.
 weights/            saved models. Legacy: best.eqx / hc64_160.eqx / best_dt.eqx (+ .json sidecars)
                     were trained on the OLD cell-based data and do NOT load against today's
                     ModelConfig. New runs write a directory: <out>/{epoch_N,weights}.eqx + metadata.json
 scripts/run         local run (pins CUDA_VISIBLE_DEVICES, `uv run train`)
 scripts/run.slrm    SLURM batch script (sbatch scripts/run.slrm, via `make train`)
 scripts/smoke.slrm  2-epoch end-to-end check (train -> SP4 rollout -> reload -> eval)
-scripts/generate.slrm  SLURM datagen job
+scripts/generate.slrm  SLURM datagen job (main_sp4 only — see DATA.md)
+scripts/scaling.slrm   analysis/scaling.py (gpu:full)
+scripts/solver_time.slrm  analysis/solver_time.py (gpu:full)
 ```
 
 ## How it works
@@ -90,25 +100,37 @@ change. Current contents:
 | `train/fixed_geo` | 512 | (256, 256) | (101, 257, 257, 3) |
 | `val/fixed_geo`   | 128 | (256, 256) | (101, 257, 257, 3) |
 | `val/sp4`         | 1   | **(100, 25)** | (101, 101, 26, 3) |
-| `val/large`       | 1   | **(2000, 2000)** | (101, 2001, 2001, 3) |
 | `val/sp4_xlarge`  | 1   | **(4000, 4000)** | (101, 4001, 4001, 3) |
+| ~~`val/large`~~   | —   | ~~(2000, 2000)~~ | **deleted** — see below |
 
 `metadata.json` carries `n` (cell counts), `dx`, `dt`, `t_tot`, `material{Ms,A,alpha}`, `H_ext`
 in A/m, `init`, `key`. Frames are uniformly spaced at one solver step `dt` (10 ps): 101 frames
 over 1 ns. `H_ext` is normalised by `Ms`; `_frames_to_cf` transposes a whole trajectory to
 `(t, c, h, w)` float32, `_frame_to_cf` does one frame.
 
+> **`val/large` is gone but still listed in `BENCHMARK_VARIANTS`**, so `benchmark_path("large")`
+> raises `FileNotFoundError` and `evaluate.py` — hence `scripts/eval`, `eval.slrm`, `bench.slrm`,
+> `eval_dt.slrm` and `smoke.slrm` — fails at startup. Regenerate it or drop it from the tuple.
+> It cannot be reproduced *exactly*: its field was a random draw and its metadata was deleted
+> with it, so the `large` rows in `BENCHMARKS.md` are historical. Details in `DATA.md`.
+
 **The benchmark variants (`config.BENCHMARK_VARIANTS` = `sp4_xlarge`, `sp4`, `large`) are held out of the val
 loss.** That is not just convention — each sits on its own mesh (100x25 and 2000x2000 cells against
-the training set's 256x256), so neither *can* share a batch with the other val trajectories. `sp4_xlarge` (4000x4000, 244x the training area) is the headline and the largest mesh the
-surrogate can evaluate on one GPU — the solver goes further, the model OOMs above it, see
-`datagen.generate.main_sp4`. It stacks field extrapolation, a reversal and the mesh change;
+the training set's 256x256), so neither *can* share a batch with the other val trajectories. `sp4_xlarge` (4000x4000, 244x the training area) is the headline. It was chosen as the largest mesh
+the surrogate could evaluate on one GPU; that limit was an artefact (see `datagen.generate.main_sp4`)
+and 5000² now runs at 0.37 s/step, so the true ceiling is higher and unlocated. It stacks field extrapolation, a reversal and the mesh change;
 `sp4` is the same physics on 100x25; `large` is 61x the area
 with an in-distribution field, isolating domain-size transfer. Benchmarks bigger than `large` need
 `gpu:full`, not a MIG slice. Adding a variant to `data/val/` that is *not* listed in `BENCHMARK_VARIANTS` and is
 not on the training mesh will make training fail at startup on the mixed-mesh guard.
 
-**Loading is memory-mapped.** The dataset is ~80 GB over 643 trajectories (val was cut from 256 to
+Every sample's `metadata.json` records the `PRNGKey` it was generated from, and everything
+else about the sample derives from it — so all 642 are archived in **`manifest/metadata.zip`**
+(247 KB, committed; `data/` itself stays gitignored) and a bare clone can rebuild the training
+set in ~4 GPU-hours. `unzip manifest/metadata.zip -d .` restores them in place. `generate.py` cannot do it as written; `DATA.md` has
+the three reasons and the recipe.
+
+**Loading is memory-mapped.** The dataset is ~66 GB over 642 trajectories (val was cut from 256 to
 128 on 2026-08-28 to reclaim quota; the survivors are `sample-00001..00128`, names unchanged); one training sample
 touches two frames (~0.8 MB). `open_trajectory` mmaps `m.npy` and reads the metadata without
 touching the frames (mapping all 769 costs ~30 MB RSS), and `LLGStepperSource.__getitem__`
@@ -134,8 +156,10 @@ so **mixed-mesh evaluation already works**; mixed-mesh *training* would need one
 one demag per mesh, and is not implemented.
 
 **Training** (`training.py` + `train.py`) — the objective is a plain **one-step MSE**
-(`loss_fn`) on `(m_t, m_{t+s})` pairs; `train.py` builds the source with `strides=[1]`, so
-`s_enc` is constantly 0 today. Val uses `with_mesh`, so a val split on another mesh still scores.
+(`loss_fn`) on `(m_t, m_{t+s})` pairs. `--strides 1 2 4 8 16` (default `1`) sets which step
+sizes the source emits, in multiples of the 10 ps base step; each adds ~one trajectory's worth of
+pairs (443 vs 99 per trajectory for the five above), so scale `--epochs` down to hold the
+gradient budget fixed — 9 epochs at five strides ≈ 40 at one. Val uses `with_mesh`, so a val split on another mesh still scores.
 `update_fn` is `filter_jit` with donation; the demag tensor leaf is
 kept out of the gradient by `trainable_filter`. Optimiser: `clip_by_global_norm` + `adamw`, on a
 warmup+cosine schedule (`make_schedule`) when `--cosine` is passed, otherwise a constant LR.
@@ -152,8 +176,8 @@ checkpoints saved before this change (full-tree) no longer load. `uv run python 
 round-trips a small model as a self-check.
 Every `checkpoint_every` epochs the SP4 bulk RMSE is computed and logged as `sp4/bulk_rmse`, and
 the best-so-far model is saved as `<out>/best.eqx` (`wandb.summary.best_sp4_bulk_rmse` /
-`best_epoch`). Every checkpointed epoch is *also* kept, and the last one is `weights.eqx`. The rollout-k loss, `--strides`/`--augment` flags and `RolloutSource` described in
-earlier versions of this file no longer exist in `training.py`.
+`best_epoch`). Every checkpointed epoch is *also* kept, and the last one is `weights.eqx`. The rollout-k loss, the `--augment` flag and `RolloutSource` described in earlier versions
+of this file no longer exist in `training.py` (`--strides` is back, as a plain source option).
 
 ## Running
 
@@ -170,7 +194,8 @@ Direct: `uv run train --epochs 40 --batch-size 8 --learning-rate 3e-4 --cosine
 --checkpoint-every 5 --out weights/run1 --wandb-mode disabled`. Flags: `--cosine` warmup+cosine
 schedule (otherwise constant LR); `--checkpoint-every N` runs the SP4 rollout eval, logs
 `sp4/bulk_rmse`, saves `epoch_N.eqx` (plus `best.eqx` on improvement) and writes
-`rollout_epoch_N.png`; `--max-train-trajectories` / `--max-val-trajectories` cap how many
+`rollout_epoch_N.png`; `--strides` / `--pushforward` pick the training loss (see Training);
+`--max-train-trajectories` / `--max-val-trajectories` cap how many
 trajectories each split maps, for smoke runs; `--out` is a **directory** (`save_model` writes
 `<out>/<tag>.eqx` + `<out>/metadata.json`) — passing a `.eqx` *file* path makes a directory with
 that name, and crashes outright if a file already sits there. `--epochs`, `--batch-size`,
@@ -185,9 +210,16 @@ self-describing (the sidecar carries `mesh_n`/`mesh_dx`/`demag_p`, so the demag 
 pass `n=` to retarget another mesh). Then `metrics.bulk_magnetization(model, sp4_path())` and
 `metrics.bulk_rmse`. `sbatch scripts/eval.slrm`, or `scripts/eval <dir> <tag>`, runs
 `llg_emulator.evaluate`: SP4 bulk RMSE + plot, plus rollout correlation over val trajectories.
-Benchmarks run through `metrics.rollout_metrics`, which streams the rollout one frame at a time
-(bulk ⟨m⟩(t) plus per-frame correlation) — `val/large` is 4.85 GB, so its full history does not fit
-on the device. `--vtr` stays SP4-only for the same reason: the three `large` series would be 14.5 GB.
+Benchmarks run through `metrics.rollout_metrics(model, path, stride)`, which streams the rollout
+one frame at a time and returns `(bulk_ref, bulk_pred, corr, step_time)` — `val/large` is 4.85 GB,
+so its full history does not fit on the device. `step_time` is integrator wall time only (JIT-warm,
+device-synchronised); reference-frame I/O and reductions are excluded, and `evaluate` prints both.
+`cond` is passed as a traced argument, not closed over: closing over it baked `s_enc` into the HLO
+and recompiled the whole 4001² graph (~50 s) on every call, which is what made stride-1 rollouts
+look as slow as the solver. `evaluate --strides 1 2 4 … 100` rolls each benchmark out at
+each step size (`stride` base steps per model call, compared to every `stride`-th reference frame;
+`100` is one step from frame 0 to the 1 ns end state) and prints wall time per rollout, which is
+the number to set against the solver's. `--vtr` stays SP4-only for the same reason: the three `large` series would be 14.5 GB.
 `--vtr` additionally writes `<out>/vtr/sp4_{reference,predicted,error}.pvd` — one `.vtr` per
 frame plus a PVD collection carrying the physical time, so ParaView scrubs the 1 ns directly.
 `m` is nodal and `io.write_vtr` writes cell data, so the nodal counts are passed as the cell
@@ -199,6 +231,10 @@ counts: each node renders as one voxel, offset half a cell. Nothing is interpola
 4 blocks, 40 epochs, one-step loss, cosine, lr 3e-4) — trained on 256x256, evaluated on SP4's
 100x25 mesh, val one-step MSE 2.26e-06 against an 8.0e-3 trivial baseline. Nothing has overfit
 at 40 epochs on 512 trajectories, so the capacity and epoch ceilings below no longer apply.
+`run-dt` (strides 1–16, same budget) shows the Δt conditioning works — stride 16 on `large` matches
+run1's correlation in 6 steps, 57x faster than the solver — but does not extrapolate to untrained
+strides (32/64/100 fail) and is weak on the SP4 reversal. Cost profile: a step is 96% CNN, 7% demag,
+0.236 s at 4001²; 3.5–3.7x faster than dopri5 at stride 1. All in `BENCHMARKS.md`.
 
 ### Best recipe & results (SP4) — historical
 
@@ -286,5 +322,13 @@ Real, and documented so they aren't mistaken for intent.
    are referenced only from commented-out blocks in `train.py`. Delete unless you're about to use
    them.
 
-6. **`README.md` is empty** and `pyproject.toml` still carries the `uv init` placeholder
+6. **`datagen.generate` cannot rebuild the training set.** `__main__` only runs `main_sp4`;
+   `main_fixed_geo` builds a hardcoded 2000x2000 into `<split>/xlarge` (it is really the
+   `large` generator) and `main_variable_geo` writes a *random mesh per sample* into
+   `<split>/fixed_geo`, which `LLGStepperSource` would then reject for mixing meshes. Both
+   also index `keys[index]` 1-based into a length-`n_samples` array. The samples on disk came
+   from a version no longer in git history. `DATA.md` has the recipe for rebuilding them from
+   the per-sample keys in `manifest/metadata.zip`.
+
+7. **`README.md` is empty** and `pyproject.toml` still carries the `uv init` placeholder
    description. `.ruff_cache/` is in the tree but ruff is not a dependency.

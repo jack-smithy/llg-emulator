@@ -1,0 +1,24 @@
+#!/bin/bash
+#
+#SBATCH -J train_dt
+#SBATCH --time="12:00:00"
+#SBATCH --gres=gpu:1g.24gb:1
+#SBATCH --requeue
+#SBATCH -o logs/train_dt-%j.log
+
+# Variable-dt run: strides {1,2,4,8,16} x 10 ps. 443 pairs/trajectory vs 99 for
+# stride 1, so 9 epochs is the same gradient budget as run1's 40 (255k vs 253k
+# steps). Plain one-step loss, same recipe otherwise: one variable changed.
+uv run train \
+    --epochs 9 \
+    --batch-size 8 \
+    --learning-rate 3e-4 \
+    --cosine \
+    --weight-decay 1e-5 \
+    --grad-clip 1.0 \
+    --hidden-channels 64 \
+    --num-blocks 4 \
+    --checkpoint-every 1 \
+    --strides 1 2 4 8 16 \
+    --out weights/run-dt \
+    --wandb-mode disabled

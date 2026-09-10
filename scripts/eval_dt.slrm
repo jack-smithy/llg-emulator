@@ -1,0 +1,15 @@
+#!/bin/bash
+#SBATCH -J eval_dt
+#SBATCH --time="3:00:00"
+#SBATCH --gres=gpu:full:1
+#SBATCH --mem=64G
+#SBATCH -o logs/eval_dt-%j.log
+# Trained strides {1..16}; 32/64 probe extrapolation in s_enc; 100 is one step
+# from frame 0 straight to the 1 ns equilibrium -- the end goal. run1 (trained at
+# stride 1 only) is the baseline row: it shows what the conditioning input buys.
+set -e
+for R in weights/run-dt weights/run1; do
+  echo "##### $R"
+  uv run python -m llg_emulator.evaluate --model-path $R --tag best \
+      --strides 1 2 4 8 16 32 64 100 --max-trajectories 6
+done

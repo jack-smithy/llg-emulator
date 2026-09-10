@@ -19,3 +19,7 @@ notebooks
 weights
 .nm_cache
 archive
+# LaTeX build artifacts (main.tex is the source; figures/*.pdf are kept)
+main.aux
+main.out
+main.pdf

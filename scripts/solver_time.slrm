@@ -1,0 +1,7 @@
+#!/bin/bash
+#SBATCH -J solver_time
+#SBATCH --time="3:00:00"
+#SBATCH --gres=gpu:full:1
+#SBATCH --mem=64G
+#SBATCH -o logs/solver_time-%j.log
+uv run python analysis/solver_time.py

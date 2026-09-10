@@ -268,9 +268,11 @@ def main_sp4():
     Size ceiling on one GPU (RTX PRO 6000 Blackwell, 96 GB), measured 2026-08-28:
     the *solver* is not the limit -- 5000x5000 peaks at 14.4 GB of device memory.
     The surrogate is: a rollout step peaks at 16.2 GB on 3001^2 and 30.2 GB on
-    4001^2 (quadratic), and 5001^2 dies on a single 36 GiB allocation even with
-    XLA_PYTHON_CLIENT_MEM_FRACTION=.95. So 4000 is the largest mesh that can be
-    both simulated and evaluated; going beyond it needs tiled inference.
+    4001^2 (quadratic). 5001^2 OOMed on a single 36 GiB allocation when the
+    conditioning vector was closed over as a jit constant; with it passed as a
+    traced argument (metrics.rollout_metrics, 2026-09-02) 5001^2 runs at
+    0.37 s/step. The true ceiling is above 5000 and has not been located; 4000
+    was chosen when it looked like the limit and is kept as the benchmark.
     """
     parser = ArgumentParser()
     parser.add_argument("--n", type=int, default=4000, help="cells per side")

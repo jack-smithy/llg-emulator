@@ -12,6 +12,7 @@ The checkpoint is self-describing (`metadata.json` carries the mesh), so nothing
 here needs to know how the model was trained.
 """
 
+import time
 from argparse import ArgumentParser
 from pathlib import Path
 
@@ -50,6 +51,8 @@ def _parse_args():
     parser.add_argument("--max-trajectories", type=int, default=16)
     # 3 x 101 .vtr frames + 3 .pvd time series, ~10 MB
     parser.add_argument("--vtr", action="store_true", help="write ParaView files")
+    # step sizes to roll the benchmarks out at, in base steps; 100 = one step to t_end
+    parser.add_argument("--strides", type=int, nargs="+", default=[1])
     return parser.parse_args()
 
 
@@ -125,25 +128,30 @@ def write_sp4_vtr(model, out_dir: Path):
     )
 
 
-def run_benchmark(model, variant: str, out_dir: Path):
-    """Roll out one benchmark trajectory and report bulk RMSE + correlation.
+def run_benchmark(model, variant: str, out_dir: Path, stride: int = 1):
+    """Roll out one benchmark at `stride` base steps per call; report bulk RMSE,
+    correlation and wall time. The first call at a mesh includes jit compilation.
 
     Streamed frame by frame (`metrics.rollout_metrics`), so this holds regardless
     of mesh size — `large` is 2001x2001 nodal and its full history would not fit
-    on the device.
+    on the device. `steps` is integrator time only (JIT-warm, device-synchronised);
+    `eval total` adds compile, reference-frame I/O and metric reductions.
     """
     path = benchmark_path(variant)
     trj = open_trajectory(path)
-    ref, pred, corr = rollout_metrics(model, path)
+    t0 = time.perf_counter()
+    ref, pred, corr, step_secs = rollout_metrics(model, path, stride=stride)
+    secs = time.perf_counter() - t0  # includes compile, reference reads, reductions
     rmse = bulk_rmse(ref, pred)
 
     fig, _ = plot_m_means(m_avg=ref, m_avg_pred=pred)
-    fig.savefig(out_dir / f"{variant}_bulk.png")
+    fig.savefig(out_dir / f"{variant}_bulk_s{stride}.png")
     plt.close(fig)
 
     print(
-        f"{variant:>6}: mesh {str(trj.n):>12}  bulk_rmse {rmse:.4e}  "
-        f"corr mean {corr.mean():.4f} final {corr[-1]:.4f}",
+        f"{variant:>10} stride {stride:3d} ({len(ref) - 1:3d} steps) mesh {trj.n!s:>12}  "
+        f"bulk_rmse {rmse:.4e}  corr mean {corr.mean():.4f} final {corr[-1]:.4f}  "
+        f"steps {step_secs:6.2f}s  (eval total {secs:5.1f}s)",
         flush=True,
     )
     return rmse, corr
@@ -170,7 +178,8 @@ def main():
 
     # every benchmark variant: each on its own mesh, none seen during training
     for variant in BENCHMARK_VARIANTS:
-        run_benchmark(model, variant, model_path)
+        for stride in args.strides:
+            run_benchmark(model, variant, model_path, stride=stride)
 
     if args.vtr:
         write_sp4_vtr(model, model_path / "vtr")
