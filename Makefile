@@ -1,11 +1,8 @@
-train:
-	sbatch scripts/run.slrm
-
-eval:
-	sbatch scripts/eval.slrm
-
 check:
-	squeue -u js82197
+	squeue -u smith
 
 gpu:
-	srun --jobid=$(JOBID) --pty nvidia-smi
+	srun --jobid=$(JOBID) --pty nvitop
+
+clear-logs:
+	rm -rf logs/*.out

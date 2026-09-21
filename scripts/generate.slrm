@@ -1,13 +1,11 @@
 #!/bin/bash
 #
 #SBATCH -J datagen
-#SBATCH --time="6:00:00"
-#SBATCH --gres=gpu:full:1
-#SBATCH --mem=128G
+#SBATCH --time="2:00:00"
+#SBATCH --gres=gpu:1g.24gb:1
 #SBATCH --requeue
-#SBATCH -o logs/generate-%j.log
+#SBATCH -o logs/%x-%j.out
 
-# --mem matters: the demag tensor is assembled in float64 on the host (~144*N^2
-# bytes) before being cast. Frames themselves stream to disk, so they cost one
-# frame of RAM regardless of mesh -- see datagen.generate.run.
-uv run python -m datagen.generate --n "${N:-4000}" --name "${NAME:-sp4_xlarge}"
+echo "Job started on $(date)"
+echo "Running on node(s): $SLURM_NODELIST"
+
