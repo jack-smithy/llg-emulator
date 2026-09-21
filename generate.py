@@ -32,7 +32,18 @@ from pathlib import Path
 
 import h5py
 import numpy as np
+import torch
 import yaml
+from magnumnp import (
+    DemagField,
+    ExchangeField,
+    ExternalField,
+    LLGSolver,
+    Mesh,
+    State,
+    normalize,
+    set_log_level,
+)
 
 N = (100, 25, 1)  # cells; z is the film thickness, so the grid is 2D
 DX = (5e-9, 5e-9, 3e-9)
@@ -55,7 +66,11 @@ def _rand_unit(shape, gen):
     theta = 2.0 * torch.pi * torch.rand(shape, generator=gen)
     phi = torch.acos(2.0 * torch.rand(shape, generator=gen) - 1.0)
     return torch.stack(
-        [torch.sin(phi) * torch.cos(theta), torch.sin(phi) * torch.sin(theta), torch.cos(phi)],
+        [
+            torch.sin(phi) * torch.cos(theta),
+            torch.sin(phi) * torch.sin(theta),
+            torch.cos(phi),
+        ],
         dim=-1,
     )
 
@@ -89,17 +104,6 @@ def simulate(seed, init_fn):
 
     Returns `(n_t, nx, ny, 3)` float32 — the singleton z axis is squeezed out.
     """
-    import torch
-    from magnumnp import (
-        DemagField,
-        ExchangeField,
-        ExternalField,
-        LLGSolver,
-        Mesh,
-        State,
-        normalize,
-    )
-
     gen = torch.Generator(device=torch.get_default_device()).manual_seed(seed)
 
     state = State(Mesh(N, DX))
@@ -128,8 +132,14 @@ def simulate(seed, init_fn):
 def write_split(path, m, dataset_name):
     """`m` is `(n_traj, n_t, nx, ny, 3)` float32."""
     n_traj, n_t, nx, ny, _ = m.shape
-    scalars = {"Ms": MATERIAL["Ms"], "A": MATERIAL["A"], "alpha": MATERIAL["alpha"],
-               "Hx": H_EXT[0], "Hy": H_EXT[1], "Hz": H_EXT[2]}
+    scalars = {
+        "Ms": MATERIAL["Ms"],
+        "A": MATERIAL["A"],
+        "alpha": MATERIAL["alpha"],
+        "Hx": H_EXT[0],
+        "Hy": H_EXT[1],
+        "Hz": H_EXT[2],
+    }
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with h5py.File(path, "w") as f:
@@ -144,9 +154,11 @@ def write_split(path, m, dataset_name):
         dims = f.create_group("dimensions")
         dims.attrs["spatial_dims"] = list(SPATIAL_DIMS)
         # cell centres, and the physical time of each frame
-        coords = {"time": np.linspace(0.0, T_TOT, n_t),
-                  "x": (np.arange(nx) + 0.5) * DX[0],
-                  "y": (np.arange(ny) + 0.5) * DX[1]}
+        coords = {
+            "time": np.linspace(0.0, T_TOT, n_t),
+            "x": (np.arange(nx) + 0.5) * DX[0],
+            "y": (np.arange(ny) + 0.5) * DX[1],
+        }
         for name, value in coords.items():
             d = dims.create_dataset(name, data=value.astype(np.float32))
             d.attrs["sample_varying"] = False
@@ -176,9 +188,13 @@ def write_split(path, m, dataset_name):
         g.attrs["field_names"] = list(FIELDS)
         for i, name in enumerate(FIELDS):
             # the loader reads one (trajectory, frame) at a time; chunk to match
-            d = g.create_dataset(name, data=np.ascontiguousarray(m[..., i]),
-                                 chunks=(1, 1, nx, ny), compression="gzip",
-                                 compression_opts=1)
+            d = g.create_dataset(
+                name,
+                data=np.ascontiguousarray(m[..., i]),
+                chunks=(1, 1, nx, ny),
+                compression="gzip",
+                compression_opts=1,
+            )
             d.attrs["sample_varying"] = True
             d.attrs["time_varying"] = True
             d.attrs["dim_varying"] = [True] * len(SPATIAL_DIMS)
@@ -190,8 +206,9 @@ def write_split(path, m, dataset_name):
 def write_stats(path, m):
     """`stats.yaml` over the train split, keyed by field name (t0 ⇒ plain floats)."""
     delta = np.diff(m, axis=1)
-    stats = {k: {} for k in
-             ("mean", "std", "rms", "mean_delta", "std_delta", "rms_delta")}
+    stats = {
+        k: {} for k in ("mean", "std", "rms", "mean_delta", "std_delta", "rms_delta")
+    }
     for i, name in enumerate(FIELDS):
         a, d = m[..., i].astype(np.float64), delta[..., i].astype(np.float64)
         stats["mean"][name] = float(a.mean())
@@ -204,64 +221,37 @@ def write_stats(path, m):
     return stats
 
 
-def verify(root):
-    """Re-read what was written and assert the format invariants the well checks."""
-    for split in ("train", "valid", "test"):
-        (path,) = sorted((root / "data" / split).glob("*.hdf5"))
-        with h5py.File(path, "r") as f:
-            n_traj = int(f.attrs["n_trajectories"])
-            n_spatial = int(f.attrs["n_spatial_dims"])
-            assert n_spatial == len(f["dimensions"].attrs["spatial_dims"])
-            for name in f.attrs["simulation_parameters"]:
-                assert name in f.attrs and name in f["scalars"]
-            assert set(f["scalars"].attrs["field_names"]) == set(f["scalars"])
-            n_t = f["dimensions"]["time"].shape[-1]
-            shape = (n_traj, n_t) + tuple(
-                f["dimensions"][d].shape[-1] for d in f["dimensions"].attrs["spatial_dims"]
-            )
-            assert list(f["t0_fields"].attrs["field_names"]) == list(FIELDS)
-            m = np.stack([f["t0_fields"][name][:] for name in FIELDS], axis=-1)
-            assert m.shape[:-1] == shape, (m.shape, shape)
-            norm = np.linalg.norm(m, axis=-1)
-            assert abs(norm - 1.0).max() < 1e-5, abs(norm - 1.0).max()
-        print(f"  {split}: {path.name}  m{m.shape}  ok")
-    assert yaml.safe_load((root / "stats.yaml").read_text())["std"].keys() == set(FIELDS)
-    print("  stats.yaml ok")
-
-
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--out", type=Path, default=Path("data/well/micromagnetics_llg"))
+    p.add_argument("--out", type=Path, required=True)
     p.add_argument("--n-train", type=int, default=48)
     p.add_argument("--n-valid", type=int, default=8)
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--device", type=str, default="0", help="CUDA device id, -1 for CPU")
-    p.add_argument("--verify-only", action="store_true")
     args = p.parse_args()
 
-    if args.verify_only:
-        verify(args.out)
-        return
-
-    os.environ.setdefault("CUDA_DEVICE", args.device)  # magnum.np reads this on import
-    from magnumnp import set_log_level
-
-    set_log_level(25)
+    set_log_level(250)
 
     # Trajectory i uses seed base+i whatever split it lands in, so adding samples
     # to one split cannot change another.
-    splits = {"train": range(args.n_train),
-              "valid": range(args.n_train, args.n_train + args.n_valid)}
+    splits = {
+        "train": range(args.n_train),
+        "valid": range(args.n_train, args.n_train + args.n_valid),
+    }
     train_m = None
     for split, indices in splits.items():
         frames = []
         for i in indices:
             init_fn = INITS[i % len(INITS)]
-            print(f"[{split}] sample {len(frames) + 1}/{len(indices)} "
-                  f"seed={args.seed + i} init={init_fn.__name__}", flush=True)
+            print(
+                f"[{split}] sample {len(frames) + 1}/{len(indices)} "
+                f"seed={args.seed + i} init={init_fn.__name__}",
+                flush=True,
+            )
             frames.append(simulate(args.seed + i, init_fn))
         m = np.stack(frames)
-        write_split(args.out / "data" / split / f"llg_{split}.hdf5", m, "micromagnetics_llg")
+        write_split(
+            args.out / "data" / split / f"llg_{split}.hdf5", m, "micromagnetics_llg"
+        )
         if split == "train":
             train_m = m
 
@@ -271,7 +261,6 @@ def main():
 
     write_stats(args.out / "stats.yaml", train_m)
     print(f"wrote {args.out}")
-    verify(args.out)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-#SBATCH -J datagen
+#SBATCH -J train
 #SBATCH --time="2:00:00"
 #SBATCH --gres=gpu:1g.24gb:1
 #SBATCH --requeue
@@ -9,8 +9,4 @@
 echo "Job started on $(date)"
 echo "Running on node(s): $SLURM_NODELIST"
 
-uv run generate.py \
-    --n-train 128 \
-    --n-valid 32 \
-    --out datasets/permalloy_thin_film_switching \
-    --seed 0
+uv run train.py
