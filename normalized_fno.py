@@ -85,12 +85,16 @@ class NormalizedFNO(FNO):
             conv_module=conv_module,  # type: ignore
         )
 
+    # def forward(self, x: Tensor, output_shape=None, **kwargs) -> Tensor:
+    #     dm = super().forward(x, output_shape=output_shape, **kwargs)  # (B, C, Lx, Ly)
+    #     m_hat = x / (LA.norm(x, axis=1, keepdims=True) + 1e-8)  # (B, C, Lx, Ly)
+    #     dm = dm - torch.sum(dm * m_hat, dim=0, keepdim=True) * m_hat
+    #     m1 = x + dm
+    #     return m1 / LA.norm(m1, dim=1, keepdims=True)
+
     def forward(self, x: Tensor, output_shape=None, **kwargs) -> Tensor:
-        dm = super().forward(x, output_shape=output_shape, **kwargs)  # (B, C, Lx, Ly)
-        m_hat = x / (LA.norm(x, axis=1, keepdims=True) + 1e-8)  # (B, C, Lx, Ly)
-        dm = dm - torch.sum(dm * m_hat, dim=0, keepdim=True) * m_hat
-        m1 = x + dm
-        return m1 / LA.norm(m1, dim=1, keepdims=True)
+        m = super().forward(x, output_shape=output_shape, **kwargs)  # (B, C, Lx, Ly)
+        return m / LA.norm(m, dim=1, keepdims=True)
 
 
 def main():

@@ -65,3 +65,10 @@ def one_step_preds(model, loader, device):
 def relative_norm_error(m):
     norm = np.linalg.norm(m, axis=-1)
     return norm.mean((1, 2))
+
+
+def device_info():
+    try:
+        print(torch.cuda.get_device_name(0))
+    except RuntimeError:
+        print("no gpus found")

@@ -8,7 +8,7 @@ from the_well.benchmark.metrics import MSE, VRMSE
 from the_well.data import WellDataset
 from tqdm import tqdm
 
-from normalized_fno import FNO
+from normalized_fno import NormalizedFNO
 from utils import mse_loss, one_step_preds, prepare_batch, rollout
 
 parser = ArgumentParser()
@@ -54,7 +54,7 @@ val_dataset = WellDataset(
 
 F = train_dataset.metadata.n_fields
 
-model = FNO(
+model = NormalizedFNO(
     n_modes=(16, 16),
     in_channels=IN_CONTEXT_N * F,
     out_channels=1 * F,
@@ -70,11 +70,24 @@ train_loader = torch.utils.data.DataLoader(
     batch_size=BATCH_SIZE,
     num_workers=NUM_WORKERS,
     generator=generator,
+    drop_last=True,
 )
 
-stats = {"history": []}
+val_loader = torch.utils.data.DataLoader(
+    dataset=train_dataset,
+    shuffle=False,
+    batch_size=BATCH_SIZE,
+    num_workers=NUM_WORKERS,
+    generator=generator,
+    drop_last=True,
+)
+
+
+stats: dict = {"train_history": [], "val_history": []}
+
 with tqdm(range(EPOCHS)) as bar:
     for epoch in bar:
+        train_loss = 0
         for batch in train_loader:
             x, y = prepare_batch(batch, device=device)
 
@@ -85,7 +98,19 @@ with tqdm(range(EPOCHS)) as bar:
 
             optimizer.step()
             optimizer.zero_grad()
-            stats["history"].append(loss.item())
+            train_loss += loss.item()
+
+        stats["train_history"].append(train_loss / len(train_loader))
+
+        val_loss = 0
+        for batch in val_loader:
+            x, y = prepare_batch(batch, device=device)
+
+            fx = model(x)
+
+            loss = mse_loss(y, fx)
+            val_loss += loss.item()
+        stats["val_history"].append(val_loss / len(val_loader))
 
 
 model.eval()
@@ -126,6 +151,13 @@ truth = truth[:, IN_CONTEXT_N:]
 rollout_data = np.stack([truth[0].cpu().numpy(), pred[0].cpu().numpy()])
 np.save(f"{results_path}/rollout.npy", rollout_data)
 
-
+stats["config"] = {
+    "batch_size": BATCH_SIZE,
+    "epochs": EPOCHS,
+    "learning_rate": LEARNING_RATE,
+    "in_context_n": IN_CONTEXT_N,
+    "seed": args.seed,
+    "configuration": args.configuration,
+}
 with open(f"{results_path}/stats.json", "w+") as f:
     json.dump(stats, f)
