@@ -1,6 +1,7 @@
 import torch
 from einops import rearrange
 from torch import Tensor
+import numpy as np
 
 
 def mse_loss(y, y_pred):
@@ -59,3 +60,8 @@ def one_step_preds(model, loader, device):
         rearrange(torch.cat(preds), pattern, F=n_fields),
         rearrange(torch.cat(truths), pattern, F=n_fields),
     )
+
+
+def relative_norm_error(m):
+    norm = np.linalg.norm(m, axis=-1)
+    return norm.mean((1, 2))

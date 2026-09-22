@@ -8,12 +8,16 @@ from the_well.benchmark.metrics import MSE, VRMSE
 from the_well.data import WellDataset
 from tqdm import tqdm
 
-from normalized_fno import NormalizedFNO
+from normalized_fno import FNO
 from utils import mse_loss, one_step_preds, prepare_batch, rollout
 
 parser = ArgumentParser()
 parser.add_argument("--seed", type=int, required=True)
 parser.add_argument("--configuration", type=str, required=True)
+parser.add_argument("--learning-rate", type=float, default=5e-3)
+parser.add_argument("--batch-size", type=int, default=16)
+parser.add_argument("--epochs", type=int, default=5)
+parser.add_argument("--in-context-n", type=int, default=4)
 args = parser.parse_args()
 
 device = "cuda"
@@ -24,12 +28,12 @@ results_path.mkdir(exist_ok=True, parents=True)
 torch.manual_seed(args.seed)
 generator = torch.Generator().manual_seed(args.seed)
 
-IN_CONTEXT_N = 1
-BATCH_SIZE = 16
+IN_CONTEXT_N = args.in_context_n
+BATCH_SIZE = args.batch_size
 NUM_WORKERS = 4
 N_FRAMES = 100
-EPOCHS = 5
-LEARNING_RATE = 5e-3
+EPOCHS = args.epochs
+LEARNING_RATE = args.learning_rate
 
 train_dataset = WellDataset(
     path=dataset_path,
@@ -50,7 +54,7 @@ val_dataset = WellDataset(
 
 F = train_dataset.metadata.n_fields
 
-model = NormalizedFNO(
+model = FNO(
     n_modes=(16, 16),
     in_channels=IN_CONTEXT_N * F,
     out_channels=1 * F,
