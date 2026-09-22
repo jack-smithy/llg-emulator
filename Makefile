@@ -6,3 +6,6 @@ gpu:
 
 clear-logs:
 	rm -rf logs/*.out
+
+train:
+	sbatch scripts/train.slrm

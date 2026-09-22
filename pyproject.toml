@@ -28,3 +28,7 @@ dev = [
 
 [project.scripts]
 train = "llg_emulator.train:main"
+
+
+[tool.ruff.lint]
+ignore=["F722", "F541", "E402", "I001", "PLR0402"]

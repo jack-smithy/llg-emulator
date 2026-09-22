@@ -1,20 +1,35 @@
+import json
+from pathlib import Path
+from argparse import ArgumentParser
+
+import numpy as np
 import torch
-from einops import rearrange
-from neuralop.models import FNO
-from the_well.benchmark.metrics import VRMSE
+from the_well.benchmark.metrics import MSE, VRMSE
 from the_well.data import WellDataset
 from tqdm import tqdm
 
-from utils import mse_loss, prepare_batch
+from normalized_fno import NormalizedFNO
+from utils import mse_loss, one_step_preds, prepare_batch, rollout
+
+parser = ArgumentParser()
+parser.add_argument("--seed", type=int, required=True)
+parser.add_argument("--configuration", type=str, required=True)
+args = parser.parse_args()
 
 device = "cuda"
 dataset_path = "datasets/permalloy_thin_film_switching"
+results_path = Path("results/") / args.configuration / f"seed_{args.seed}"
+results_path.mkdir(exist_ok=True, parents=True)
 
-IN_CONTEXT_N = 4
-LOG_EVERY = 10
-N_STEPS = 100
+torch.manual_seed(args.seed)
+generator = torch.Generator().manual_seed(args.seed)
+
+IN_CONTEXT_N = 1
 BATCH_SIZE = 16
-NUM_WORKERS = -1
+NUM_WORKERS = 4
+N_FRAMES = 100
+EPOCHS = 5
+LEARNING_RATE = 5e-3
 
 train_dataset = WellDataset(
     path=dataset_path,
@@ -35,7 +50,7 @@ val_dataset = WellDataset(
 
 F = train_dataset.metadata.n_fields
 
-model = FNO(
+model = NormalizedFNO(
     n_modes=(16, 16),
     in_channels=IN_CONTEXT_N * F,
     out_channels=1 * F,
@@ -43,30 +58,19 @@ model = FNO(
     n_layers=5,
 ).to(device)
 
-optimizer = torch.optim.Adam(model.parameters(), lr=5e-3)
+optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
 train_loader = torch.utils.data.DataLoader(
     dataset=train_dataset,
     shuffle=True,
     batch_size=BATCH_SIZE,
     num_workers=NUM_WORKERS,
+    generator=generator,
 )
 
-val_loader = torch.utils.data.DataLoader(
-    dataset=train_dataset,
-    shuffle=False,
-    batch_size=BATCH_SIZE,
-    num_workers=NUM_WORKERS,
-)
-
-train_losses = []
-val_losses = []
-
-with tqdm(range(5)) as bar:
+stats = {"history": []}
+with tqdm(range(EPOCHS)) as bar:
     for epoch in bar:
-        epoch_train_history = []
-        epoch_val_history = []
-
         for batch in train_loader:
             x, y = prepare_batch(batch, device=device)
 
@@ -77,15 +81,47 @@ with tqdm(range(5)) as bar:
 
             optimizer.step()
             optimizer.zero_grad()
+            stats["history"].append(loss.item())
 
-            epoch_train_history.append(loss.item())
 
-        for batch in val_loader:
-            x, y = prepare_batch(batch, device=device)
+model.eval()
+torch.save(model.state_dict(), f"{results_path}/model.pt")
 
-            fx = model(x)
+### validation
+metrics = {"mse": MSE(), "vrmse": VRMSE()}
 
-            loss = mse_loss(y, fx)
-            epoch_val_history.append(loss.item())
+for split, dataset in [("train", train_dataset), ("val", val_dataset)]:
+    loader = torch.utils.data.DataLoader(
+        dataset=dataset,
+        shuffle=False,
+        batch_size=BATCH_SIZE,
+        num_workers=NUM_WORKERS,
+        generator=generator,
+    )
+    pred, truth = one_step_preds(model, loader, device=device)
+    # the well's metrics reduce over space, leaving (N, 1, F) to average
+    stats[split] = {  # type: ignore
+        name: metric(pred, truth, dataset.metadata).mean().item()
+        for name, metric in metrics.items()
+    }
+    print(f"{split} one-step: {stats[split]}")
 
-            bar.set_description(f"loss={loss.item():.4f}")
+### test on sp4
+test_dataset = WellDataset(
+    path=dataset_path,
+    well_split_name="test",
+    n_steps_input=N_FRAMES,
+    n_steps_output=1,
+    use_normalization=False,
+)
+
+truth = test_dataset[0]["input_fields"].unsqueeze(0).to(device)
+pred = rollout(model, truth[:, :IN_CONTEXT_N], n_steps=truth.shape[1] - IN_CONTEXT_N)
+truth = truth[:, IN_CONTEXT_N:]
+
+rollout_data = np.stack([truth[0].cpu().numpy(), pred[0].cpu().numpy()])
+np.save(f"{results_path}/rollout.npy", rollout_data)
+
+
+with open(f"{results_path}/stats.json", "w+") as f:
+    json.dump(stats, f)
