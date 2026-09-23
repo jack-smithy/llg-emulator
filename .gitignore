@@ -20,3 +20,5 @@ weights
 
 logs/
 datasets/
+
+test.ipynb

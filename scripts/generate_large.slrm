@@ -1,0 +1,20 @@
+#!/bin/bash
+#
+#SBATCH -J datagen-large
+#SBATCH --time="12:00:00"
+#SBATCH --gres=gpu:full:1
+#SBATCH --mem=32G
+#SBATCH --requeue
+#SBATCH -o logs/%x-%j.out
+
+set -euo pipefail
+
+echo "Job started on $(date)"
+echo "Running on node(s): $SLURM_NODELIST"
+
+mkdir -p logs
+
+# One N x N s-state trajectory under the SP4 field as the test split; N is set in
+# generate_large.py to the largest film both magnum.np and the FNO fit on a full GPU.
+# Extra sbatch arguments pass through, e.g. `sbatch scripts/generate_large.slrm --n 1024`.
+uv run generate_large.py --out datasets/permalloy_varied_field "$@"

@@ -1,0 +1,19 @@
+#!/bin/bash
+#
+#SBATCH -J eval_large
+#SBATCH --time="1:00:00"
+#SBATCH --gres=gpu:1g.24gb:1 
+#SBATCH -o logs/%x-%j.out
+
+set -euo pipefail
+
+echo "Job started on $(date)"
+echo "Running on node(s): $SLURM_NODELIST"
+
+CONFIGURATION="test-factorized"
+
+echo "Training configuration: $CONFIGURATION"
+
+uv run python -c "import utils; utils.device_info()"
+
+uv run eval_large.py --configuration $CONFIGURATION --seed 1

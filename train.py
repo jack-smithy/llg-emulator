@@ -9,7 +9,13 @@ from the_well.data import WellDataset
 from tqdm import tqdm
 
 from normalized_fno import NormalizedFNO
-from utils import mse_loss, one_step_preds, prepare_batch, rollout
+from utils import (
+    H_RANGE,
+    mse_loss,
+    one_step_preds,
+    prepare_batch,
+    rollout,
+)
 
 parser = ArgumentParser()
 parser.add_argument("--seed", type=int, required=True)
@@ -17,49 +23,56 @@ parser.add_argument("--configuration", type=str, required=True)
 parser.add_argument("--learning-rate", type=float, default=5e-3)
 parser.add_argument("--batch-size", type=int, default=16)
 parser.add_argument("--epochs", type=int, default=5)
-parser.add_argument("--in-context-n", type=int, default=4)
+parser.add_argument("--in-frames", type=int, default=4)
 args = parser.parse_args()
 
 device = "cuda"
-dataset_path = "datasets/permalloy_thin_film_switching"
-results_path = Path("results/") / args.configuration / f"seed_{args.seed}"
+path = Path("datasets/permalloy_varied_field")
+results_path = Path("results") / path.name / args.configuration / f"seed_{args.seed}"
 results_path.mkdir(exist_ok=True, parents=True)
 
 torch.manual_seed(args.seed)
 generator = torch.Generator().manual_seed(args.seed)
 
-IN_CONTEXT_N = args.in_context_n
+IN_FRAMES = args.in_frames
+OUT_FRAMES = 1
 BATCH_SIZE = args.batch_size
 NUM_WORKERS = 4
-N_FRAMES = 100
+N_FRAMES_ROLLOUT = 100
 EPOCHS = args.epochs
 LEARNING_RATE = args.learning_rate
+ROLLOUT_IDX = 7
 
 train_dataset = WellDataset(
-    path=dataset_path,
+    path=str(path),
     well_split_name="train",
-    n_steps_input=IN_CONTEXT_N,
-    n_steps_output=1,
+    n_steps_input=IN_FRAMES,
+    n_steps_output=OUT_FRAMES,
     use_normalization=False,
 )
 
 val_dataset = WellDataset(
-    path=dataset_path,
+    path=str(path),
     well_split_name="valid",
-    n_steps_input=IN_CONTEXT_N,
-    n_steps_output=1,
+    n_steps_input=IN_FRAMES,
+    n_steps_output=OUT_FRAMES,
     use_normalization=False,
 )
 
 
 F = train_dataset.metadata.n_fields
 
+
 model = NormalizedFNO(
     n_modes=(16, 16),
-    in_channels=IN_CONTEXT_N * F,
+    in_channels=IN_FRAMES * F,
     out_channels=1 * F,
-    hidden_channels=128,
-    n_layers=5,
+    hidden_channels=64,
+    n_layers=2,
+    norm="ada_in",
+    ada_in_features=2,  # H = (Hx, Hy), Hz is always 0
+    factorization="Tucker",
+    rank=0.1,
 ).to(device)
 
 optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
@@ -71,46 +84,53 @@ train_loader = torch.utils.data.DataLoader(
     num_workers=NUM_WORKERS,
     generator=generator,
     drop_last=True,
+    pin_memory=True,
 )
 
 val_loader = torch.utils.data.DataLoader(
-    dataset=train_dataset,
+    dataset=val_dataset,
     shuffle=False,
     batch_size=BATCH_SIZE,
     num_workers=NUM_WORKERS,
     generator=generator,
     drop_last=True,
+    pin_memory=True,
 )
 
 
 stats: dict = {"train_history": [], "val_history": []}
 
-with tqdm(range(EPOCHS)) as bar:
-    for epoch in bar:
-        train_loss = 0
-        for batch in train_loader:
-            x, y = prepare_batch(batch, device=device)
+train_batches = len(train_loader)
+val_batches = len(val_loader)
 
-            fx = model(x)
+for epoch in range(EPOCHS):
+    train_loss = 0
+    model.train()
+    for batch in tqdm(train_loader, mininterval=10):
+        x, y, h = prepare_batch(batch, device)
 
-            loss = mse_loss(y, fx)
-            loss.backward()
+        fx = model(x, h)
 
-            optimizer.step()
-            optimizer.zero_grad()
-            train_loss += loss.item()
+        loss = mse_loss(y, fx)
+        loss.backward()
 
-        stats["train_history"].append(train_loss / len(train_loader))
+        optimizer.step()
+        optimizer.zero_grad()
+        train_loss += loss.item()
 
-        val_loss = 0
-        for batch in val_loader:
-            x, y = prepare_batch(batch, device=device)
+    stats["train_history"].append(train_loss / train_batches)
 
-            fx = model(x)
-
+    model.eval()
+    val_loss = 0
+    with torch.no_grad():
+        for batch in tqdm(val_loader, mininterval=10):
+            x, y, h = prepare_batch(batch, device)
+            fx = model(x, h)
             loss = mse_loss(y, fx)
             val_loss += loss.item()
-        stats["val_history"].append(val_loss / len(val_loader))
+    stats["val_history"].append(val_loss / val_batches)
+
+    print(f"\n=== epoch {epoch + 1} / {EPOCHS}. loss={val_loss / val_batches:.4f} ===")
 
 
 model.eval()
@@ -119,34 +139,35 @@ torch.save(model.state_dict(), f"{results_path}/model.pt")
 ### validation
 metrics = {"mse": MSE(), "vrmse": VRMSE()}
 
-for split, dataset in [("train", train_dataset), ("val", val_dataset)]:
-    loader = torch.utils.data.DataLoader(
-        dataset=dataset,
-        shuffle=False,
-        batch_size=BATCH_SIZE,
-        num_workers=NUM_WORKERS,
-        generator=generator,
-    )
-    pred, truth = one_step_preds(model, loader, device=device)
-    # the well's metrics reduce over space, leaving (N, 1, F) to average
-    stats[split] = {  # type: ignore
-        name: metric(pred, truth, dataset.metadata).mean().item()
-        for name, metric in metrics.items()
-    }
-    print(f"{split} one-step: {stats[split]}")
+
+loader = torch.utils.data.DataLoader(
+    dataset=val_dataset,
+    shuffle=False,
+    batch_size=BATCH_SIZE,
+    num_workers=NUM_WORKERS,
+    generator=generator,
+)
+pred, truth = one_step_preds(model, loader, device)
+metrics = {
+    "mse": MSE().eval(pred, truth, meta=val_dataset.metadata),
+    "vrmse": VRMSE().eval(pred, truth, meta=val_dataset.metadata),
+}
 
 ### test on sp4
-test_dataset = WellDataset(
-    path=dataset_path,
-    well_split_name="test",
-    n_steps_input=N_FRAMES,
-    n_steps_output=1,
+rollout_dataset = WellDataset(
+    path=str(path),
+    well_split_name="valid",
+    n_steps_input=N_FRAMES_ROLLOUT,
+    n_steps_output=OUT_FRAMES,
     use_normalization=False,
 )
 
-truth = test_dataset[0]["input_fields"].unsqueeze(0).to(device)
-pred = rollout(model, truth[:, :IN_CONTEXT_N], n_steps=truth.shape[1] - IN_CONTEXT_N)
-truth = truth[:, IN_CONTEXT_N:]
+sample = rollout_dataset[ROLLOUT_IDX]
+truth = sample["input_fields"].unsqueeze(0).to(device)
+h = (sample["constant_scalars"][3:5]).unsqueeze(0).to(device)
+h = (h - H_RANGE[0]) / (H_RANGE[1] - H_RANGE[0])
+pred = rollout(model, truth[:, :IN_FRAMES], h, n_steps=truth.shape[1] - IN_FRAMES)
+truth = truth[:, IN_FRAMES:]
 
 rollout_data = np.stack([truth[0].cpu().numpy(), pred[0].cpu().numpy()])
 np.save(f"{results_path}/rollout.npy", rollout_data)
@@ -155,7 +176,7 @@ stats["config"] = {
     "batch_size": BATCH_SIZE,
     "epochs": EPOCHS,
     "learning_rate": LEARNING_RATE,
-    "in_context_n": IN_CONTEXT_N,
+    "in_context_n": IN_FRAMES,
     "seed": args.seed,
     "configuration": args.configuration,
 }

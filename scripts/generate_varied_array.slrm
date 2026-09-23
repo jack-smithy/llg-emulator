@@ -1,0 +1,31 @@
+#!/bin/bash
+#
+#SBATCH -J datagen-varied
+#SBATCH --time="4:00:00"
+#SBATCH --gres=gpu:1g.24gb:1
+#SBATCH --array=0-7
+#SBATCH --requeue
+#SBATCH -o logs/%x-%A_%a.out
+
+set -euo pipefail
+
+echo "Job started on $(date)"
+echo "Running on node(s): $SLURM_NODELIST"
+echo "Array task $SLURM_ARRAY_TASK_ID"
+
+mkdir -p logs
+
+OUT=datasets/permalloy_varied_field
+
+# Each task writes its own llg_<split>_<shard>.hdf5 and stats_part_<shard>.json.
+uv run generate_varied_field.py \
+    --n-train 64 \
+    --n-valid 8 \
+    --n-test 8 \
+    --out "$OUT" \
+    --seed 0 \
+    --shard "$SLURM_ARRAY_TASK_ID" \
+    --n-shards "${SLURM_ARRAY_TASK_COUNT:-8}"
+
+echo "when the whole array is done, sum the parts into stats.yaml:"
+echo "  uv run generate_varied_field.py --out $OUT --merge-stats"

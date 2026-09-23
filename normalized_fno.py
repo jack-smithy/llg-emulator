@@ -7,11 +7,33 @@ from neuralop.layers.spectral_convolution import SpectralConv
 from neuralop.models import FNO
 from torch import Tensor, nn
 
+import flowers
+
 Number = float | int
+
+
+class FiLM(flowers.FiLM):
+    """`flowers.FiLM` behind neuralop's `AdaIN` interface.
+
+    `FNOBlocks` calls its norms with the activations alone, so the conditioning is
+    handed over beforehand through `set_embedding`, as `FNOBlocks.set_ada_in_embeddings`
+    does for `AdaIN`. Unlike `AdaIN`, the embedding may differ per sample: (B, meta_dim).
+    """
+
+    embedding: Tensor | None = None
+
+    def set_embedding(self, embedding: Tensor) -> None:
+        self.embedding = embedding
+
+    def forward(self, x: Tensor) -> Tensor:  # type: ignore[override]
+        return super().forward(x, self.embedding)
 
 
 class NormalizedFNO(FNO):
     """An FNO for unit-norm vector fields, e.g. the magnetisation m.
+
+    With `norm="ada_in"` every block's norm is a `FiLM` over `ada_in_features` per-sample
+    scalars, e.g. the applied field, passed to `forward` as `meta`.
 
     The constructor mirrors `neuralop.models.FNO`'s: the signature is restated
     rather than swallowed into **kwargs because `BaseModel.__new__` inspects it
@@ -31,6 +53,7 @@ class NormalizedFNO(FNO):
         positional_embedding: str | nn.Module | None = "grid",
         non_linearity: nn.Module = F.gelu,  # type: ignore
         norm: Literal["ada_in", "group_norm", "instance_norm"] | None = None,
+        ada_in_features: int | None = None,
         complex_data: bool = False,
         use_channel_mlp: bool = True,
         channel_mlp_dropout: float = 0,
@@ -63,7 +86,7 @@ class NormalizedFNO(FNO):
             projection_channel_ratio=projection_channel_ratio,
             positional_embedding=positional_embedding,  # type: ignore
             non_linearity=non_linearity,
-            norm=norm,  # type: ignore
+            norm=None if norm == "ada_in" else norm,  # type: ignore
             complex_data=complex_data,
             use_channel_mlp=use_channel_mlp,
             channel_mlp_dropout=channel_mlp_dropout,
@@ -84,6 +107,17 @@ class NormalizedFNO(FNO):
             preactivation=preactivation,
             conv_module=conv_module,  # type: ignore
         )
+        if norm == "ada_in":
+            # `FNO` does not pass `ada_in_features` on to `FNOBlocks`, and neuralop's `AdaIN`
+            # holds one embedding for the whole batch; FiLM conditions each sample on its own.
+            self.fno_blocks.norm = nn.ModuleList(
+                FiLM(
+                    hidden_channels,
+                    meta_dim=ada_in_features,
+                    norm_type="instance",
+                )
+                for _ in range(n_layers * self.fno_blocks.n_norms)
+            )
 
     # def forward(self, x: Tensor, output_shape=None, **kwargs) -> Tensor:
     #     dm = super().forward(x, output_shape=output_shape, **kwargs)  # (B, C, Lx, Ly)
@@ -92,9 +126,17 @@ class NormalizedFNO(FNO):
     #     m1 = x + dm
     #     return m1 / LA.norm(m1, dim=1, keepdims=True)
 
-    def forward(self, x: Tensor, output_shape=None, **kwargs) -> Tensor:
-        m = super().forward(x, output_shape=output_shape, **kwargs)  # (B, C, Lx, Ly)
-        return m / LA.norm(m, dim=1, keepdims=True)
+    def forward(  # type: ignore
+        self,
+        m0: Tensor,
+        meta: Tensor | None = None,
+        output_shape=None,
+        **kwargs,
+    ) -> Tensor:
+        if meta is not None:
+            self.fno_blocks.set_ada_in_embeddings(meta)
+        m1 = super().forward(m0, output_shape=output_shape, **kwargs)  # (B, C, Lx, Ly)
+        return m1 / LA.norm(m1, dim=1, keepdims=True)
 
 
 def main():
@@ -109,9 +151,11 @@ def main():
         out_channels=1 * F,
         hidden_channels=128,
         n_layers=5,
+        norm="ada_in",
+        ada_in_features=3,
     )
 
-    y = model(x)
+    y = model(x, meta=torch.zeros(8, 3))
 
     print(y.shape)
 

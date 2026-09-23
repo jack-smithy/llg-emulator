@@ -2,6 +2,11 @@ import torch
 from einops import rearrange
 from torch import Tensor
 import numpy as np
+from tqdm import tqdm
+
+MU_0 = 4 * torch.pi * 1e-7
+
+H_RANGE = (-50e-3 / MU_0, 50e-3 / MU_0)
 
 
 def mse_loss(y, y_pred):
@@ -17,14 +22,18 @@ def prepare_batch(batch, device):
     y = y.to(device)
     y = rearrange(y, "B To Lx Ly F -> B (To F) Lx Ly")
 
-    return x, y
+    # the applied field the model is conditioned on, in units of the train split's rms |H|
+    h = batch["constant_scalars"][:, 3:5].to(device)
+    h = (h - H_RANGE[0]) / (H_RANGE[1] - H_RANGE[0])
+    return x, y, h
 
 
 @torch.no_grad()
-def rollout(model, x: Tensor, n_steps: int) -> Tensor:
+def rollout(model, x: Tensor, meta: Tensor, n_steps: int) -> Tensor:
     """Autoregressively predict n_steps frames from a context window.
 
     x: (B, Ti, Lx, Ly, F), as WellDataset serves input_fields.
+    meta: (B, 3), the scaled applied field, as prepare_batch returns it.
     returns: (B, n_steps, Lx, Ly, F), same layout as output_fields.
     """
     n_fields = x.shape[-1]
@@ -32,7 +41,7 @@ def rollout(model, x: Tensor, n_steps: int) -> Tensor:
 
     frames = []
     for _ in range(n_steps):
-        pred = model(x)
+        pred = model(x, meta)
         frames.append(pred)
         x = torch.cat([x[:, n_fields:], pred], dim=1)  # slide window one frame
 
@@ -49,9 +58,9 @@ def one_step_preds(model, loader, device):
     well's metrics reduce over.
     """
     preds, truths = [], []
-    for batch in loader:
-        x, y = prepare_batch(batch, device)
-        preds.append(model(x).cpu())
+    for batch in tqdm(loader):
+        x, y, h = prepare_batch(batch, device)
+        preds.append(model(x, h).cpu())
         truths.append(y.cpu())
 
     n_fields = truths[0].shape[1]  # n_steps_output=1, so channels == n_fields

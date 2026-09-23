@@ -1,6 +1,12 @@
 #!/bin/bash
+#
+#SBATCH -J eval-large
+#SBATCH --time="1:00:00"
+#SBATCH --mem=8G
+#SBATCH -o logs/%x-%j.out
 
-CONFIGURATION="normalized-fno-4-step-lr-1e-3-long"
+
+CONFIGURATION="test-factorized"
 
 pids=()
 for SEED in {0..3}; do

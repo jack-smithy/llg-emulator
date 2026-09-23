@@ -3,15 +3,16 @@
 #SBATCH -J train
 #SBATCH --time="2:00:00"
 #SBATCH --gres=gpu:1g.24gb:1
-#SBATCH -o logs/%x-%A.out
+#SBATCH --array=0-3
+#SBATCH -o logs/%x-%A_%a.out
 
 set -euo pipefail
 
 echo "Job started on $(date)"
 echo "Running on node(s): $SLURM_NODELIST"
+echo "Array task $SLURM_ARRAY_TASK_ID"
 
-CONFIGURATION="test-factorized-compiled"
-SEED=1
+CONFIGURATION="normalized-32-epoch"
 
 echo "Training configuration: $CONFIGURATION"
 
@@ -19,13 +20,13 @@ uv run python -c "import utils; utils.device_info()"
 
 
 uv run train.py \
-    --seed $SEED \
+    --seed $SLURM_ARRAY_TASK_ID \
     --configuration $CONFIGURATION \
     --in-frames 1 \
     --learning-rate 1e-3 \
-    --batch-size 32 \
-    --epochs 3
+    --batch-size 8 \
+    --epochs 32
 
 uv run eval.py \
-    --seed $SEED \
+    --seed $SLURM_ARRAY_TASK_ID \
     --configuration $CONFIGURATION

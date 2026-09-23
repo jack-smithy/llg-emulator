@@ -1,7 +1,3 @@
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["magnumnp>=2.2.0", "h5py>=3.11", "numpy", "pyyaml"]
-# ///
 """Permalloy thin-film LLG trajectories in `the_well` HDF5 format.
 
 Self-contained: run it with `uv run --script src/datagen/generate_well.py`, which

@@ -10,7 +10,8 @@ from utils import relative_norm_error
 
 
 def main(seed, configuration):
-    results_path = Path("results") / configuration / f"seed_{seed}"
+    base_path = Path("results/permalloy_varied_field")
+    results_path = base_path / configuration / f"seed_{seed}"
 
     with open(results_path / "stats.json", "r") as f:
         stats = json.load(f)

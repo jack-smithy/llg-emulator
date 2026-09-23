@@ -1,0 +1,21 @@
+#!/bin/bash
+#
+#SBATCH -J datagen-varied
+#SBATCH --time="24:00:00"
+#SBATCH --gres=gpu:1g.24gb:1
+#SBATCH --requeue
+#SBATCH -o logs/%x-%j.out
+
+set -euo pipefail
+
+echo "Job started on $(date)"
+echo "Running on node(s): $SLURM_NODELIST"
+
+mkdir -p logs
+
+uv run generate_varied_field.py \
+    --n-train 64 \
+    --n-valid 8 \
+    --n-test 8 \
+    --out datasets/permalloy_varied_field \
+    --seed 0
