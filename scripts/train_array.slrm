@@ -8,25 +8,33 @@
 
 set -euo pipefail
 
+CONFIGURATION="32-epoch-4-step-orig-params"
+DATASET="permalloy_varied_field_large"
+IN_FRAMES=4
+LEARNING_RATE=1e-4
+BATCH_SIZE=8
+EPOCHS=32
+
+
 echo "Job started on $(date)"
 echo "Running on node(s): $SLURM_NODELIST"
-echo "Array task $SLURM_ARRAY_TASK_ID"
-
-CONFIGURATION="normalized-32-epoch"
-
+echo "Array task: $SLURM_ARRAY_TASK_ID"
+echo "Dataset: $DATASET"
 echo "Training configuration: $CONFIGURATION"
+echo "Learning rate=$LEARNING_RATE, Batch size=$BATCH_SIZE, In frames=$IN_FRAMES"
 
 uv run python -c "import utils; utils.device_info()"
-
 
 uv run train.py \
     --seed $SLURM_ARRAY_TASK_ID \
     --configuration $CONFIGURATION \
-    --in-frames 1 \
-    --learning-rate 1e-3 \
-    --batch-size 8 \
-    --epochs 32
+    --dataset $DATASET \
+    --in-frames $IN_FRAMES \
+    --learning-rate $LEARNING_RATE \
+    --batch-size $BATCH_SIZE \
+    --epochs $EPOCHS
 
 uv run eval.py \
     --seed $SLURM_ARRAY_TASK_ID \
+    --dataset $DATASET \
     --configuration $CONFIGURATION

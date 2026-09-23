@@ -9,9 +9,9 @@ from plot import animate_channels, plot_learning_curves, plot_norms, plot_rollou
 from utils import relative_norm_error
 
 
-def main(seed, configuration):
-    base_path = Path("results/permalloy_varied_field")
-    results_path = base_path / configuration / f"seed_{seed}"
+def main(seed, configuration, dataset):
+    base_path = Path("results")
+    results_path = base_path / dataset / configuration / f"seed_{seed}"
 
     with open(results_path / "stats.json", "r") as f:
         stats = json.load(f)
@@ -52,5 +52,6 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--configuration", type=str, required=True)
+    parser.add_argument("--dataset", type=str, required=True)
     args = parser.parse_args()
-    main(seed=args.seed, configuration=args.configuration)
+    main(seed=args.seed, configuration=args.configuration, dataset=args.dataset)

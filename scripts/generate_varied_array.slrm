@@ -15,12 +15,11 @@ echo "Array task $SLURM_ARRAY_TASK_ID"
 
 mkdir -p logs
 
-OUT=datasets/permalloy_varied_field
+OUT=datasets/permalloy_varied_field_large
 
-# Each task writes its own llg_<split>_<shard>.hdf5 and stats_part_<shard>.json.
 uv run generate_varied_field.py \
-    --n-train 64 \
-    --n-valid 8 \
+    --n-train 256 \
+    --n-valid 32 \
     --n-test 8 \
     --out "$OUT" \
     --seed 0 \

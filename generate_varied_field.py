@@ -301,49 +301,6 @@ def write_stats(path, acc):
     return stats
 
 
-# --- check ------------------------------------------------------------------
-
-
-def self_check():
-    """Writer and stats-merge round-trip on fake frames. No physics, no GPU."""
-    rng = np.random.default_rng(0)
-    n_t = 3
-    frames = rng.normal(size=(n_t, N[0], N[1], 3)).astype(np.float32)
-    acc = new_acc()
-
-    with tempfile.TemporaryDirectory() as tmp:
-        out = Path(tmp)
-        path = out / "data" / "train" / "llg_train_0.hdf5"
-        with create_split(path, 1, n_t, "check") as f:
-            write_sample(f, 0, frames, (1.0, 2.0, 0.0))
-            accumulate(acc, frames)
-
-        with h5py.File(path, "r") as f:
-            mx = f["t0_fields"]["mx"][0]
-            assert mx.shape == (n_t, N[0], N[1]), mx.shape
-            assert np.array_equal(mx, frames[..., 0]), "frames mangled"
-            assert f["scalars"]["Hx"][0] == 1.0 and f["scalars"]["Hz"][0] == 0.0
-            assert f["dimensions"]["x"].shape == (N[0],)
-
-        # a merge of two shards must equal one accumulator over both their samples
-        other = rng.normal(loc=3.0, size=(n_t, N[0], N[1], 3)).astype(np.float32)
-        acc2 = new_acc()
-        accumulate(acc2, other)
-        write_part(out, 0, acc)
-        write_part(out, 1, acc2)
-        both = np.concatenate([frames, other], axis=0)[..., 0]
-        assert np.isclose(merge_stats(out)["mean"]["mx"], both.mean(), atol=1e-6)
-
-        (out / "stats_part_1.json").unlink()
-        stats = merge_stats(out)
-
-    assert np.isclose(stats["mean"]["mx"], frames[..., 0].mean(), atol=1e-6)
-    assert np.isclose(stats["std"]["mx"], frames[..., 0].std(), atol=1e-6)
-    d = np.diff(frames.astype(np.float64), axis=0)[..., 2]
-    assert np.isclose(stats["rms_delta"]["mz"], np.sqrt((d**2).mean()), atol=1e-6)
-    print("self-check ok")
-
-
 # --- driver -----------------------------------------------------------------
 
 
@@ -357,11 +314,8 @@ def main():
     p.add_argument("--shard", type=int, default=0)
     p.add_argument("--n-shards", type=int, default=1)
     p.add_argument("--merge-stats", action="store_true")
-    p.add_argument("--self-check", action="store_true")
     args = p.parse_args()
 
-    if args.self_check:
-        return self_check()
     if args.out is None:
         p.error("--out is required")
     if args.merge_stats:

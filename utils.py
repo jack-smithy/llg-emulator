@@ -3,6 +3,7 @@ from einops import rearrange
 from torch import Tensor
 import numpy as np
 from tqdm import tqdm
+import torch.linalg as LA
 
 MU_0 = 4 * torch.pi * 1e-7
 
@@ -25,6 +26,26 @@ def prepare_batch(batch, device):
     # the applied field the model is conditioned on, in units of the train split's rms |H|
     h = batch["constant_scalars"][:, 3:5].to(device)
     h = (h - H_RANGE[0]) / (H_RANGE[1] - H_RANGE[0])
+    return x, y, h
+
+
+def prepare_batch_h_field(batch, device):
+    x = batch["input_fields"]
+    x = x.to(device)
+    x = rearrange(x, "B Ti Lx Ly F -> B (Ti F) Lx Ly")
+
+    y = batch["output_fields"]
+    y = y.to(device)
+    y = rearrange(y, "B To Lx Ly F -> B (To F) Lx Ly")
+
+    h_scalars = batch["constant_scalars"][:, 3:5].to(device)
+    h_scalars = (h_scalars - H_RANGE[0]) / (H_RANGE[1] - H_RANGE[0])
+
+    B, _, *L = x.shape
+    h = torch.ones((B, 2, *L), device=device)
+    h[:, 0] *= h_scalars[0]
+    h[:, 1] *= h_scalars[1]
+
     return x, y, h
 
 
@@ -81,3 +102,8 @@ def device_info():
         print(torch.cuda.get_device_name(0))
     except RuntimeError:
         print("no gpus found")
+
+
+def normalize(m: Tensor) -> Tensor:
+    assert len(m.shape) == 4  # (B, C, W, H)
+    return m / LA.norm(m, dim=1, keepdims=True)

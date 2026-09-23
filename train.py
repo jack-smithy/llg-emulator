@@ -20,6 +20,7 @@ from utils import (
 parser = ArgumentParser()
 parser.add_argument("--seed", type=int, required=True)
 parser.add_argument("--configuration", type=str, required=True)
+parser.add_argument("--dataset", type=str, required=True)
 parser.add_argument("--learning-rate", type=float, default=5e-3)
 parser.add_argument("--batch-size", type=int, default=16)
 parser.add_argument("--epochs", type=int, default=5)
@@ -27,8 +28,8 @@ parser.add_argument("--in-frames", type=int, default=4)
 args = parser.parse_args()
 
 device = "cuda"
-path = Path("datasets/permalloy_varied_field")
-results_path = Path("results") / path.name / args.configuration / f"seed_{args.seed}"
+path = f"datasets/{args.dataset}"
+results_path = Path("results") / args.dataset / args.configuration / f"seed_{args.seed}"
 results_path.mkdir(exist_ok=True, parents=True)
 
 torch.manual_seed(args.seed)
@@ -44,7 +45,7 @@ LEARNING_RATE = args.learning_rate
 ROLLOUT_IDX = 7
 
 train_dataset = WellDataset(
-    path=str(path),
+    path=path,
     well_split_name="train",
     n_steps_input=IN_FRAMES,
     n_steps_output=OUT_FRAMES,
@@ -52,7 +53,7 @@ train_dataset = WellDataset(
 )
 
 val_dataset = WellDataset(
-    path=str(path),
+    path=path,
     well_split_name="valid",
     n_steps_input=IN_FRAMES,
     n_steps_output=OUT_FRAMES,
@@ -110,14 +111,13 @@ for epoch in range(EPOCHS):
         x, y, h = prepare_batch(batch, device)
 
         fx = model(x, h)
-
         loss = mse_loss(y, fx)
         loss.backward()
 
         optimizer.step()
         optimizer.zero_grad()
-        train_loss += loss.item()
 
+        train_loss += loss.item()
     stats["train_history"].append(train_loss / train_batches)
 
     model.eval()
@@ -125,8 +125,10 @@ for epoch in range(EPOCHS):
     with torch.no_grad():
         for batch in tqdm(val_loader, mininterval=10):
             x, y, h = prepare_batch(batch, device)
+
             fx = model(x, h)
             loss = mse_loss(y, fx)
+
             val_loss += loss.item()
     stats["val_history"].append(val_loss / val_batches)
 
@@ -155,7 +157,7 @@ metrics = {
 
 ### test on sp4
 rollout_dataset = WellDataset(
-    path=str(path),
+    path=path,
     well_split_name="valid",
     n_steps_input=N_FRAMES_ROLLOUT,
     n_steps_output=OUT_FRAMES,
