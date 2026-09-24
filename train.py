@@ -8,12 +8,13 @@ from the_well.benchmark.metrics import MSE, VRMSE
 from the_well.data import WellDataset
 from tqdm import tqdm
 
+from neuralop.models import CODANO
 from normalized_fno import NormalizedFNO
 from utils import (
     H_RANGE,
     mse_loss,
     one_step_preds,
-    prepare_batch,
+    prepare_batch_h_field,
     rollout,
 )
 
@@ -64,16 +65,23 @@ val_dataset = WellDataset(
 F = train_dataset.metadata.n_fields
 
 
-model = NormalizedFNO(
-    n_modes=(16, 16),
-    in_channels=IN_FRAMES * F,
-    out_channels=1 * F,
-    hidden_channels=64,
+# model = NormalizedFNO(
+#     n_modes=(16, 16),
+#     in_channels=IN_FRAMES * F,
+#     out_channels=1 * F,
+#     hidden_channels=64,
+#     n_layers=2,
+#     norm="ada_in",
+#     ada_in_features=2,  # H = (Hx, Hy), Hz is always 0
+#     factorization="Tucker",
+#     rank=0.1,
+# ).to(device)
+
+
+model = CODANO(
     n_layers=2,
-    norm="ada_in",
-    ada_in_features=2,  # H = (Hx, Hy), Hz is always 0
-    factorization="Tucker",
-    rank=0.1,
+    n_modes=[[16, 16], [16, 16]],
+    static_channel_dim=2,
 ).to(device)
 
 optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
@@ -108,9 +116,9 @@ for epoch in range(EPOCHS):
     train_loss = 0
     model.train()
     for batch in tqdm(train_loader, mininterval=10):
-        x, y, h = prepare_batch(batch, device)
+        x, y, h = prepare_batch_h_field(batch, device)
 
-        fx = model(x, h)
+        fx = model(x, meta=h)
         loss = mse_loss(y, fx)
         loss.backward()
 
@@ -124,9 +132,9 @@ for epoch in range(EPOCHS):
     val_loss = 0
     with torch.no_grad():
         for batch in tqdm(val_loader, mininterval=10):
-            x, y, h = prepare_batch(batch, device)
+            x, y, h = prepare_batch_h_field(batch, device)
 
-            fx = model(x, h)
+            fx = model(x, meta=h)
             loss = mse_loss(y, fx)
 
             val_loss += loss.item()
