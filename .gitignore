@@ -23,3 +23,6 @@ archive
 main.aux
 main.out
 main.pdf
+
+datasets/
+logs/
