@@ -3,29 +3,39 @@
 #SBATCH -J train
 #SBATCH --time="2:00:00"
 #SBATCH --gres=gpu:1g.24gb:1
+#SBATCH --array=0-1
 #SBATCH -o logs/%x-%A.out
 
+
 set -euo pipefail
+
+CONFIGURATION="16-epoch-4-step-bs-8"
+DATASET="llg_field_switching"
+IN_FRAMES=4
+LEARNING_RATE=1e-4
+BATCH_SIZE=16
+EPOCHS=16
+SEED=1
 
 echo "Job started on $(date)"
 echo "Running on node(s): $SLURM_NODELIST"
 
-CONFIGURATION="test-factorized-compiled"
-SEED=1
-
+echo "Dataset: $DATASET"
 echo "Training configuration: $CONFIGURATION"
+echo "Learning rate=$LEARNING_RATE, Batch size=$BATCH_SIZE, In frames=$IN_FRAMES"
 
 uv run python -c "import utils; utils.device_info()"
-
 
 uv run train.py \
     --seed $SEED \
     --configuration $CONFIGURATION \
-    --in-frames 1 \
-    --learning-rate 1e-3 \
-    --batch-size 32 \
-    --epochs 3
+    --dataset $DATASET \
+    --in-frames $IN_FRAMES \
+    --learning-rate $LEARNING_RATE \
+    --batch-size $BATCH_SIZE \
+    --epochs $EPOCHS
 
 uv run eval.py \
-    --seed $SEED \
+    --seed $SLURM_ARRAY_TASK_ID \
+    --dataset $DATASET \
     --configuration $CONFIGURATION

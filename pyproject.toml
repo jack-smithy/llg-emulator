@@ -5,9 +5,10 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "accelerate>=1.15.0",
     "h5py>=3.16.0",
     "magnumnp>=2.2.0",
-    "neuraloperator>=2.0.0",
+    "neuraloperator",
     "pyyaml>=6.0.3",
     "the-well>=1.2.0",
     "torch>=2.14.0",
@@ -32,3 +33,6 @@ train = "llg_emulator.train:main"
 
 [tool.ruff.lint]
 ignore=["F722", "F541", "E402", "I001", "PLR0402"]
+
+[tool.uv.sources]
+neuraloperator = { path = "../neuraloperator" }
