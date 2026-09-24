@@ -1,19 +1,19 @@
 #!/bin/bash
 #
 #SBATCH -J train
-#SBATCH --time="2:00:00"
+#SBATCH --time="8:00:00"
 #SBATCH --gres=gpu:1g.24gb:1
-#SBATCH --array=0-3
+#SBATCH --array=0-1
 #SBATCH -o logs/%x-%A_%a.out
 
 set -euo pipefail
 
-CONFIGURATION="32-epoch-4-step-orig-params"
+CONFIGURATION="16-epoch-4-step-bs-8"
 DATASET="permalloy_varied_field_large"
 IN_FRAMES=4
 LEARNING_RATE=1e-4
-BATCH_SIZE=8
-EPOCHS=32
+BATCH_SIZE=16
+EPOCHS=16
 
 
 echo "Job started on $(date)"
