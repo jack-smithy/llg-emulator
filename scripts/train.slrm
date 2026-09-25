@@ -8,12 +8,12 @@
 
 set -euo pipefail
 
-CONFIGURATION="baseline"
+CONFIGURATION="baseline-3"
 DATASET="llg_field_switching"
 IN_FRAMES=4
-LEARNING_RATE=1e-4
+LEARNING_RATE=1e-3
 BATCH_SIZE=16
-EPOCHS=4
+EPOCHS=8
 SEED=1
 
 echo "Job started on $(date)"

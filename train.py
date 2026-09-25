@@ -6,15 +6,15 @@ import numpy as np
 import torch
 from the_well.benchmark.metrics import MSE, VRMSE
 from the_well.data import WellDataset
-from tqdm import tqdm
 
-from normalized_fno import NormalizedFNO
+from model import NormalizedFNO
 from utils import (
     H_RANGE,
     mse_loss,
     one_step_preds,
-    prepare_batch,
     rollout,
+    train_epoch,
+    val_epoch,
 )
 
 parser = ArgumentParser()
@@ -32,6 +32,7 @@ path = f"datasets/{args.dataset}"
 results_path = Path("results") / args.dataset / args.configuration / f"seed_{args.seed}"
 results_path.mkdir(exist_ok=True, parents=True)
 
+torch.set_default_dtype(torch.float32)
 torch.manual_seed(args.seed)
 generator = torch.Generator().manual_seed(args.seed)
 
@@ -72,8 +73,6 @@ model = NormalizedFNO(
     n_layers=2,
     norm="ada_in",
     ada_in_features=2,  # H = (Hx, Hy), Hz is always 0
-    factorization="Tucker",
-    rank=0.1,
 ).to(device)
 
 optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
@@ -101,40 +100,14 @@ val_loader = torch.utils.data.DataLoader(
 
 stats: dict = {"train_history": [], "val_history": []}
 
-train_batches = len(train_loader)
-val_batches = len(val_loader)
-
 for epoch in range(EPOCHS):
-    train_loss = 0
-    model.train()
-    for batch in tqdm(train_loader, mininterval=10):
-        x, y, h = prepare_batch(batch, device)
+    train_loss = train_epoch(model, train_loader, mse_loss, optimizer, device)
+    stats["train_history"].append(train_loss)
 
-        fx = model(x, meta=h)
-        loss = mse_loss(y, fx)
-        loss.backward()
+    val_loss = val_epoch(model, val_loader, mse_loss, device)
+    stats["val_history"].append(val_loss)
 
-        optimizer.step()
-        optimizer.zero_grad()
-
-        train_loss += loss.item()
-
-    stats["train_history"].append(train_loss / train_batches)
-
-    model.eval()
-    val_loss = 0
-    with torch.no_grad():
-        for batch in tqdm(val_loader, mininterval=10):
-            x, y, h = prepare_batch(batch, device)
-
-            fx = model(x, meta=h)
-            loss = mse_loss(y, fx)
-
-            val_loss += loss.item()
-
-    stats["val_history"].append(val_loss / val_batches)
-
-    print(f"\n=== epoch {epoch + 1} / {EPOCHS}. loss={val_loss / val_batches:.4f} ===")
+    print(f"\n=== epoch {epoch + 1} / {EPOCHS}. loss={val_loss:.4f} ===")
 
 
 model.eval()

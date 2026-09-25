@@ -1,13 +1,15 @@
-from the_well.data import WellDataset
-import torch
-from torch import Tensor
-from einops import rearrange
-from utils import H_RANGE
-from normalized_fno import NormalizedFNO
 from argparse import ArgumentParser
-from plot import plot_rollout
 from pathlib import Path
 from time import perf_counter
+
+import torch
+from einops import rearrange
+from the_well.data import WellDataset
+from torch import Tensor
+
+from model import NormalizedFNO
+from plot import plot_rollout
+from utils import H_RANGE
 
 dataset_path = "datasets/permalloy_varied_field"
 device = "cuda"
@@ -54,8 +56,6 @@ def main(seed, configuration):
         n_layers=2,
         norm="ada_in",
         ada_in_features=2,  # H = (Hx, Hy), Hz is always 0
-        factorization="Tucker",
-        rank=0.1,
     ).to(device)
 
     model.load_state_dict(torch.load(results_path / "model.pt", weights_only=False))

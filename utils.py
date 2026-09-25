@@ -107,3 +107,34 @@ def device_info():
 def normalize(m: Tensor) -> Tensor:
     assert len(m.shape) == 4  # (B, C, W, H)
     return m / LA.norm(m, dim=1, keepdims=True)
+
+
+def train_epoch(model, loader, loss_fn, optimizer, device) -> float:
+    running_loss = 0
+    model.train()
+    for batch in tqdm(loader, mininterval=10):
+        x, y, h = prepare_batch(batch, device)
+
+        fx = model(x, meta=h)
+        loss = loss_fn(y, fx)
+        loss.backward()
+
+        optimizer.step()
+        optimizer.zero_grad()
+
+        running_loss += loss.item()
+    return running_loss / len(loader)
+
+
+def val_epoch(model, loader, loss_fn, device) -> float:
+    running_loss = 0
+    model.eval()
+    with torch.no_grad():
+        for batch in tqdm(loader, mininterval=10):
+            x, y, h = prepare_batch(batch, device)
+
+            fx = model(x, meta=h)
+            loss = loss_fn(y, fx)
+
+            running_loss += loss.item()
+    return running_loss / len(loader)

@@ -3,30 +3,112 @@ from typing import Literal
 import torch
 import torch.linalg as LA
 import torch.nn.functional as F
-from neuralop.layers.spectral_convolution import SpectralConv
 from neuralop.models import FNO
 from torch import Tensor, nn
-
-import flowers
 
 Number = float | int
 
 
-class FiLM(flowers.FiLM):
-    """`flowers.FiLM` behind neuralop's `AdaIN` interface.
+class InstanceNorm(nn.Module):
+    """Dimension-agnostic instance normalization layer for neural operators."""
 
-    `FNOBlocks` calls its norms with the activations alone, so the conditioning is
-    handed over beforehand through `set_embedding`, as `FNOBlocks.set_ada_in_embeddings`
-    does for `AdaIN`. Unlike `AdaIN`, the embedding may differ per sample: (B, meta_dim).
-    """
+    def __init__(self, **kwargs):
+        super().__init__()
+        self.kwargs = kwargs
+
+    def forward(self, x):
+        size = x.shape
+        x = torch.nn.functional.instance_norm(x, **self.kwargs)
+        assert x.shape == size
+        return x
+
+
+class FiLM(nn.Module):
+    """Feature-wise Linear Modulation (FiLM) layer with flexible normalization."""
 
     embedding: Tensor | None = None
+
+    def __init__(
+        self,
+        num_channels,
+        meta_dim=1,
+        norm_type="layer",
+        num_groups=32,
+        eps=1e-6,
+        data_format="channels_first",
+    ):
+        super().__init__()
+        self.num_channels = num_channels
+        self.meta_dim = meta_dim
+        self.norm_type = norm_type.lower()
+        self.eps = eps
+        self.data_format = data_format
+        self.normalized_shape = (num_channels,)
+
+        # Set up normalization layer based on type
+        if self.norm_type == "group":
+            self.norm = nn.GroupNorm(num_groups, num_channels, eps=eps, affine=False)
+        elif self.norm_type == "layer":
+            self.norm = nn.LayerNorm(num_channels, eps=eps, elementwise_affine=False)
+        elif self.norm_type == "instance":
+            self.norm = InstanceNorm()
+        elif self.norm_type == "identity":
+            self.norm = nn.Identity()
+        else:
+            raise ValueError(
+                f"norm_type must be 'group', 'layer', 'instance', or 'identity', got {norm_type}"
+            )
+
+        # Map from meta_dim to channel affine parameters
+        self.weight = nn.Linear(meta_dim, num_channels)
+        self.bias = nn.Linear(meta_dim, num_channels)
+
+    def _forward(self, x, meta=None):
+        if self.norm_type in ["group", "instance"]:
+            if self.data_format == "channels_last":
+                x_for_norm = x.permute(0, -1, *range(1, x.dim() - 1))
+                x_for_norm = self.norm(x_for_norm)
+                x = x_for_norm.permute(0, *range(2, x.dim()), 1)
+            else:
+                x = self.norm(x)
+        elif self.norm_type == "layer":
+            if self.data_format == "channels_last":
+                x = self.norm(x)
+            else:
+                x_for_norm = x.permute(0, *range(2, x.dim()), 1)
+                x_for_norm = self.norm(x_for_norm)
+                x = x_for_norm.permute(0, -1, *range(1, x.dim() - 1))
+        elif self.norm_type == "identity":
+            x = self.norm(x)
+        else:
+            raise ValueError()
+
+        if meta is None:
+            return x
+
+        if meta.dim() == 1:
+            meta = meta.unsqueeze(-1)
+
+        meta = meta.type_as(x)
+        weight = self.weight(meta)
+        bias = self.bias(meta)
+
+        if self.data_format == "channels_last":
+            while weight.dim() < x.dim():
+                weight = weight.unsqueeze(1)
+                bias = bias.unsqueeze(1)
+            return weight * x + bias
+        else:
+            while weight.dim() < x.dim():
+                weight = weight.unsqueeze(-1)
+                bias = bias.unsqueeze(-1)
+            return weight * x + bias
 
     def set_embedding(self, embedding: Tensor) -> None:
         self.embedding = embedding
 
-    def forward(self, x: Tensor) -> Tensor:  # type: ignore[override]
-        return super().forward(x, self.embedding)
+    def forward(self, x: Tensor) -> Tensor:
+        return self._forward(x, self.embedding)
 
 
 class NormalizedFNO(FNO):
@@ -48,33 +130,10 @@ class NormalizedFNO(FNO):
         out_channels: int,
         hidden_channels: int,
         n_layers: int = 4,
-        lifting_channel_ratio: Number = 2,
-        projection_channel_ratio: Number = 2,
         positional_embedding: str | nn.Module | None = "grid",
         non_linearity: nn.Module = F.gelu,  # type: ignore
-        norm: Literal["ada_in", "group_norm", "instance_norm"] | None = None,
+        norm: Literal["ada_in", "group_norm", "instance_norm"] | None = "ada_in",
         ada_in_features: int | None = None,
-        complex_data: bool = False,
-        use_channel_mlp: bool = True,
-        channel_mlp_dropout: float = 0,
-        channel_mlp_expansion: float = 0.5,
-        channel_mlp_skip: Literal["linear", "identity", "soft-gating"] | None = (
-            "soft-gating"
-        ),
-        fno_skip: Literal["linear", "identity", "soft-gating"] | None = "linear",
-        resolution_scaling_factor: Number | list[Number] | None = None,
-        domain_padding: Number | list[Number] | None = None,
-        fno_block_precision: Literal["full", "half", "mixed"] = "full",
-        stabilizer: Literal["tanh"] | None = None,
-        max_n_modes: tuple[int, ...] | None = None,
-        factorization: Literal["Tucker", "CP", "TT"] | None = None,
-        rank: float = 1.0,
-        fixed_rank_modes: bool = False,
-        implementation: Literal["factorized", "reconstructed"] = "factorized",
-        decomposition_kwargs: dict | None = None,
-        separable: bool = False,
-        preactivation: bool = False,
-        conv_module: type[nn.Module] = SpectralConv,
     ):
         super().__init__(
             n_modes=n_modes,
@@ -82,34 +141,14 @@ class NormalizedFNO(FNO):
             out_channels=out_channels,
             hidden_channels=hidden_channels,
             n_layers=n_layers,
-            lifting_channel_ratio=lifting_channel_ratio,
-            projection_channel_ratio=projection_channel_ratio,
             positional_embedding=positional_embedding,  # type: ignore
             non_linearity=non_linearity,
             norm=None if norm == "ada_in" else norm,  # type: ignore
-            complex_data=complex_data,
-            use_channel_mlp=use_channel_mlp,
-            channel_mlp_dropout=channel_mlp_dropout,
-            channel_mlp_expansion=channel_mlp_expansion,
-            channel_mlp_skip=channel_mlp_skip,
-            fno_skip=fno_skip,
-            resolution_scaling_factor=resolution_scaling_factor,  # type: ignore
-            domain_padding=domain_padding,  # type: ignore
-            fno_block_precision=fno_block_precision,
-            stabilizer=stabilizer,  # type: ignore
-            max_n_modes=max_n_modes,  # type: ignore
-            factorization=factorization,  # type: ignore
-            rank=rank,
-            fixed_rank_modes=fixed_rank_modes,
-            implementation=implementation,
-            decomposition_kwargs=decomposition_kwargs,  # type: ignore
-            separable=separable,
-            preactivation=preactivation,
-            conv_module=conv_module,  # type: ignore
         )
         if norm == "ada_in":
             # `FNO` does not pass `ada_in_features` on to `FNOBlocks`, and neuralop's `AdaIN`
             # holds one embedding for the whole batch; FiLM conditions each sample on its own.
+            assert ada_in_features is not None
             self.fno_blocks.norm = nn.ModuleList(
                 FiLM(
                     hidden_channels,
