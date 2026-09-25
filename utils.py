@@ -4,6 +4,8 @@ from torch import Tensor
 import numpy as np
 from tqdm import tqdm
 import torch.linalg as LA
+import jax.tree_util as jtu
+from torch.utils.data import default_collate
 
 MU_0 = 4 * torch.pi * 1e-7
 
@@ -107,3 +109,11 @@ def device_info():
 def normalize(m: Tensor) -> Tensor:
     assert len(m.shape) == 4  # (B, C, W, H)
     return m / LA.norm(m, dim=1, keepdims=True)
+
+
+def numpy_collate(batch):
+    """
+    Collate function specifies how to combine a list of data samples into a batch.
+    default_collate creates pytorch tensors, then tree_map converts them into numpy arrays.
+    """
+    return jtu.tree_map(np.asarray, default_collate(batch))

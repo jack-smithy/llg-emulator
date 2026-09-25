@@ -7,14 +7,17 @@ import torch
 from the_well.benchmark.metrics import MSE, VRMSE
 from the_well.data import WellDataset
 from tqdm import tqdm
+import jax.random as jr
 
-from normalized_fno import NormalizedFNO
+from pdequinox.arch import ClassicFNO
+from physics import demag_for
 from utils import (
     H_RANGE,
     mse_loss,
     one_step_preds,
     prepare_batch,
     rollout,
+    numpy_collate,
 )
 
 parser = ArgumentParser()
@@ -34,11 +37,12 @@ results_path.mkdir(exist_ok=True, parents=True)
 
 torch.manual_seed(args.seed)
 generator = torch.Generator().manual_seed(args.seed)
+key = jr.PRNGKey(args.seed)
 
 IN_FRAMES = args.in_frames
 OUT_FRAMES = 1
 BATCH_SIZE = args.batch_size
-NUM_WORKERS = 4
+NUM_WORKERS = 1
 N_FRAMES_ROLLOUT = 100
 EPOCHS = args.epochs
 LEARNING_RATE = args.learning_rate
@@ -63,21 +67,6 @@ val_dataset = WellDataset(
 
 F = train_dataset.metadata.n_fields
 
-
-model = NormalizedFNO(
-    n_modes=(16, 16),
-    in_channels=IN_FRAMES * F,
-    out_channels=1 * F,
-    hidden_channels=64,
-    n_layers=2,
-    norm="ada_in",
-    ada_in_features=2,  # H = (Hx, Hy), Hz is always 0
-    factorization="Tucker",
-    rank=0.1,
-).to(device)
-
-optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
-
 train_loader = torch.utils.data.DataLoader(
     dataset=train_dataset,
     shuffle=True,
@@ -86,6 +75,7 @@ train_loader = torch.utils.data.DataLoader(
     generator=generator,
     drop_last=True,
     pin_memory=True,
+    collate_fn=numpy_collate,
 )
 
 val_loader = torch.utils.data.DataLoader(
@@ -96,8 +86,10 @@ val_loader = torch.utils.data.DataLoader(
     generator=generator,
     drop_last=True,
     pin_memory=True,
+    collate_fn=numpy_collate,
 )
 
+model = ClassicFNO(num_spatial_dims=2)
 
 stats: dict = {"train_history": [], "val_history": []}
 
