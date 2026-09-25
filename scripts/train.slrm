@@ -1,20 +1,19 @@
 #!/bin/bash
 #
 #SBATCH -J train
-#SBATCH --time="2:00:00"
+#SBATCH --time="4:00:00"
 #SBATCH --gres=gpu:1g.24gb:1
-#SBATCH --array=0-1
 #SBATCH -o logs/%x-%A.out
 
 
 set -euo pipefail
 
-CONFIGURATION="16-epoch-4-step-bs-8"
+CONFIGURATION="baseline"
 DATASET="llg_field_switching"
 IN_FRAMES=4
 LEARNING_RATE=1e-4
 BATCH_SIZE=16
-EPOCHS=16
+EPOCHS=4
 SEED=1
 
 echo "Job started on $(date)"
@@ -36,6 +35,6 @@ uv run train.py \
     --epochs $EPOCHS
 
 uv run eval.py \
-    --seed $SLURM_ARRAY_TASK_ID \
+    --seed $SEED \
     --dataset $DATASET \
     --configuration $CONFIGURATION

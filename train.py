@@ -1,6 +1,6 @@
 import json
-from pathlib import Path
 from argparse import ArgumentParser
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -8,13 +8,12 @@ from the_well.benchmark.metrics import MSE, VRMSE
 from the_well.data import WellDataset
 from tqdm import tqdm
 
-from neuralop.models import CODANO
 from normalized_fno import NormalizedFNO
 from utils import (
     H_RANGE,
     mse_loss,
     one_step_preds,
-    prepare_batch_h_field,
+    prepare_batch,
     rollout,
 )
 
@@ -65,23 +64,16 @@ val_dataset = WellDataset(
 F = train_dataset.metadata.n_fields
 
 
-# model = NormalizedFNO(
-#     n_modes=(16, 16),
-#     in_channels=IN_FRAMES * F,
-#     out_channels=1 * F,
-#     hidden_channels=64,
-#     n_layers=2,
-#     norm="ada_in",
-#     ada_in_features=2,  # H = (Hx, Hy), Hz is always 0
-#     factorization="Tucker",
-#     rank=0.1,
-# ).to(device)
-
-
-model = CODANO(
+model = NormalizedFNO(
+    n_modes=(16, 16),
+    in_channels=IN_FRAMES * F,
+    out_channels=1 * F,
+    hidden_channels=64,
     n_layers=2,
-    n_modes=[[16, 16], [16, 16]],
-    static_channel_dim=2,
+    norm="ada_in",
+    ada_in_features=2,  # H = (Hx, Hy), Hz is always 0
+    factorization="Tucker",
+    rank=0.1,
 ).to(device)
 
 optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
@@ -116,7 +108,7 @@ for epoch in range(EPOCHS):
     train_loss = 0
     model.train()
     for batch in tqdm(train_loader, mininterval=10):
-        x, y, h = prepare_batch_h_field(batch, device)
+        x, y, h = prepare_batch(batch, device)
 
         fx = model(x, meta=h)
         loss = mse_loss(y, fx)
@@ -126,18 +118,20 @@ for epoch in range(EPOCHS):
         optimizer.zero_grad()
 
         train_loss += loss.item()
+
     stats["train_history"].append(train_loss / train_batches)
 
     model.eval()
     val_loss = 0
     with torch.no_grad():
         for batch in tqdm(val_loader, mininterval=10):
-            x, y, h = prepare_batch_h_field(batch, device)
+            x, y, h = prepare_batch(batch, device)
 
             fx = model(x, meta=h)
             loss = mse_loss(y, fx)
 
             val_loss += loss.item()
+
     stats["val_history"].append(val_loss / val_batches)
 
     print(f"\n=== epoch {epoch + 1} / {EPOCHS}. loss={val_loss / val_batches:.4f} ===")
@@ -147,9 +141,6 @@ model.eval()
 torch.save(model.state_dict(), f"{results_path}/model.pt")
 
 ### validation
-metrics = {"mse": MSE(), "vrmse": VRMSE()}
-
-
 loader = torch.utils.data.DataLoader(
     dataset=val_dataset,
     shuffle=False,
@@ -158,7 +149,7 @@ loader = torch.utils.data.DataLoader(
     generator=generator,
 )
 pred, truth = one_step_preds(model, loader, device)
-metrics = {
+stats["metrics"] = {
     "mse": MSE().eval(pred, truth, meta=val_dataset.metadata),
     "vrmse": VRMSE().eval(pred, truth, meta=val_dataset.metadata),
 }
