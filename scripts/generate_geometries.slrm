@@ -4,7 +4,7 @@
 #SBATCH --time="16:00:00"
 #SBATCH --gres=gpu:1g.24gb:1
 #SBATCH --mem=24G
-#SBATCH --array=0-8
+#SBATCH --array=0-7
 #SBATCH --requeue
 #SBATCH -o logs/%x-%A_%a.out
 

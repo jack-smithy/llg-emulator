@@ -12,10 +12,10 @@ CONFIGURATION="resnet-constant-embedding"
 DATASET="llg_field_switching"
 LEARNING_RATE=1e-4
 BATCH_SIZE=16
-EPOCHS=1
-HIDDEN_CHANNELS=64
-NUM_BLOCKS=4
-SEED=1
+EPOCHS=16
+HIDDEN_CHANNELS=32
+NUM_BLOCKS=3
+SEED=2
 
 echo "Job started on $(date)"
 echo "Running on node(s): $SLURM_NODELIST"

@@ -1,0 +1,27 @@
+#!/bin/bash
+#
+#SBATCH -J eval-geom
+#SBATCH --time="3:00:00"
+#SBATCH --gres=gpu:1g.24gb:1
+#SBATCH --mem=16G
+#SBATCH -o logs/%x-%j.out
+
+set -euo pipefail
+
+CONFIGURATION="resnet-constant-embedding"
+DATASET="llg_field_switching"
+SEED=2
+
+echo "Job started on $(date)"
+echo "Running on node(s): $SLURM_NODELIST"
+echo "Dataset: $DATASET"
+echo "Configuration: $CONFIGURATION, seed $SEED"
+
+uv run python -c "import utils; utils.device_info()"
+
+# the model is rebuilt from results/$DATASET/$CONFIGURATION/seed_$SEED/metadata.json;
+# extra sbatch arguments pass through, e.g. `sbatch scripts/eval_geometries.slrm --geometries sq64 sp4`
+uv run eval_geometries.py \
+    --seed $SEED \
+    --configuration $CONFIGURATION \
+    --dataset $DATASET "$@"

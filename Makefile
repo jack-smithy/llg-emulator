@@ -15,3 +15,6 @@ train-array:
 
 eval:
 	sbatch scripts/eval.slrm
+
+eval-geometries:
+	sbatch scripts/eval_geometries.slrm
