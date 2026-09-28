@@ -14,7 +14,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jaxtyping import PyTree
-from pdequinox.arch import ClassicResNet
+from pdequinox.arch import Flower
 from model import ResidualEmulator
 from model_config import ModelConfig
 
@@ -22,7 +22,7 @@ COND_DIM = 2  # [Hx, Hy] / Ms
 
 
 def build_model(config: ModelConfig, key) -> eqx.Module:
-    network = ClassicResNet(
+    network = Flower(
         num_spatial_dims=2,
         in_channels=3 + COND_DIM,  # m (3) + the embedded conditioning
         out_channels=3,

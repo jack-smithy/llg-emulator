@@ -8,14 +8,14 @@
 
 set -euo pipefail
 
-CONFIGURATION="resnet-constant-embedding"
+CONFIGURATION="flower-constant-embedding"
 DATASET="llg_field_switching"
 LEARNING_RATE=1e-4
 BATCH_SIZE=16
-EPOCHS=16
+EPOCHS=4
 HIDDEN_CHANNELS=32
 NUM_BLOCKS=3
-SEED=2
+SEED=1
 
 echo "Job started on $(date)"
 echo "Running on node(s): $SLURM_NODELIST"
