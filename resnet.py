@@ -9,7 +9,7 @@ import jax.tree_util as jtu
 from jaxtyping import Array, PRNGKeyArray
 from pdequinox.arch import ClassicResNet
 
-from physics import DemagField, demag_for
+from physics import DemagField, demag_cache
 
 
 class FiLM(eqx.Module):
@@ -45,11 +45,13 @@ class ModelConfig:
     hidden_channels: int = 32
     num_blocks: int = 4
     activation: Callable = jax.nn.gelu
-    # mesh *cell* counts (2D thin film); the nodal fields the solver writes -
-    # and the model consumes - are (mesh_n[0] + 1, mesh_n[1] + 1). See physics.py.
+    # mesh *cell* counts (2D thin film). With `nodal=True` the fields the model
+    # consumes are (mesh_n[0] + 1, mesh_n[1] + 1); with `nodal=False` they are
+    # cell-centred and the grid is mesh_n itself. See physics.py.
     mesh_n: tuple = (256, 256)
     mesh_dx: tuple = (5e-9, 5e-9, 3e-9)
     demag_p: int = 20
+    nodal: bool = False
     # FiLM conditioning: [H_ext / Ms (3), s_enc (1)]. Every call site appends
     # s_enc unconditionally, so 4 is the only width the code can actually run.
     cond_dim: int = 4
@@ -159,5 +161,5 @@ def with_mesh(model: LLGEmulator, n, dx) -> LLGEmulator:
         )
     if n == model.demag.n:
         return model
-    demag = demag_for(n, dx, model.demag.Ms, model.demag.p)
+    demag = demag_cache(n, dx, model.demag.Ms, model.demag.p, nodal=model.demag.nodal)
     return eqx.tree_at(lambda m: m.demag, model, demag)

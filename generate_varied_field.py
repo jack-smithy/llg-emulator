@@ -112,10 +112,12 @@ def init_s_state(state, gen):
 INITS = (init_random, init_uniform, init_s_state)
 
 
-def simulate(seed, init_fn):
+def simulate(seed, init_fn, n=N):
     """Relax at zero field, then integrate T_TOT under this sample's field.
 
-    Returns `(n_t, nx, ny, 3)` float32 — the singleton z axis is squeezed out.
+    Returns `(n_t, nx, ny, 3)` float32 — the singleton z axis is squeezed out. `n` is
+    the grid, for a caller simulating a different film than this module's
+    (`generate_geometries.py`).
     """
     # imported here so --self-check runs without pulling in torch
     import torch
@@ -131,7 +133,7 @@ def simulate(seed, init_fn):
 
     gen = torch.Generator(device=torch.get_default_device()).manual_seed(seed)
 
-    state = State(Mesh(N, DX))
+    state = State(Mesh(n, DX))
     state.material = dict(MATERIAL)
     state.m = normalize(init_fn(state, gen).clone())
 
@@ -142,7 +144,7 @@ def simulate(seed, init_fn):
     llg = LLGSolver([demag, exchange, ExternalField(list(sample_field(seed)))])
     state.t = 0.0
 
-    frames = np.empty((N_T, N[0], N[1], 3), dtype=np.float32)
+    frames = np.empty((N_T, n[0], n[1], 3), dtype=np.float32)
     frames[0] = state.m.squeeze(2).cpu().numpy()
     for i in range(1, N_T):
         llg.step(state, DT)

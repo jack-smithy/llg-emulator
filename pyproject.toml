@@ -7,11 +7,11 @@ requires-python = ">=3.13"
 dependencies = [
     "accelerate>=1.15.0",
     "h5py>=3.16.0",
-    "jax>=0.11.2",
+    "jax[cuda13]>=0.11.2",
     "magnumnp>=2.2.0",
-    "neuralmag>=1.0.0",
-    "neuraloperator",
-    "pdequinox>=0.1.2",
+    "neuralmag[jax]>=1.0.0",
+    "optax>=0.2.8",
+    "pdequinox",
     "pyyaml>=6.0.3",
     "the-well>=1.2.0",
     "torch>=2.14.0",
@@ -38,4 +38,4 @@ train = "llg_emulator.train:main"
 ignore=["F722", "F541", "E402", "I001", "PLR0402"]
 
 [tool.uv.sources]
-neuraloperator = { path = "../neuraloperator" }
+pdequinox = { path = "../pdequinox" }

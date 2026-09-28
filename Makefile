@@ -9,3 +9,9 @@ clear-logs:
 
 train:
 	sbatch scripts/train.slrm
+
+train-array:
+	sbatch scripts/train_array.slrm
+
+eval:
+	sbatch scripts/eval.slrm

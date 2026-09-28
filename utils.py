@@ -1,96 +1,92 @@
-import torch
-from einops import rearrange
-from torch import Tensor
-import numpy as np
-from tqdm import tqdm
-import torch.linalg as LA
+"""Glue between `the_well`'s loaders and the JAX model.
+
+`WellDataset` serves channel-last frames, `(B, T, Lx, Ly, F)`, and the model
+takes one channel-first frame per sample, `(3, Lx, Ly)`, plus a conditioning
+vector `[H_ext / Ms (3), s_enc (1)]` (see `model.LLGEmulator`). Everything here
+is the layout change and the batching around it.
+"""
+
+import equinox as eqx
+import jax
 import jax.tree_util as jtu
+import numpy as np
+from einops import rearrange
 from torch.utils.data import default_collate
+from tqdm import tqdm
 
-MU_0 = 4 * torch.pi * 1e-7
-
-H_RANGE = (-50e-3 / MU_0, 50e-3 / MU_0)
-
-
-def mse_loss(y, y_pred):
-    return (y - y_pred).square().mean()
+# `batch["constant_scalars"]` in the order the generator writes them
+# (generate_varied_field.create_split); train.py checks the dataset agrees.
+SCALARS = ("Ms", "A", "alpha", "Hx", "Hy", "Hz")
 
 
-def prepare_batch(batch, device):
-    x = batch["input_fields"]
-    x = x.to(device)
-    x = rearrange(x, "B Ti Lx Ly F -> B (Ti F) Lx Ly")
-
-    y = batch["output_fields"]
-    y = y.to(device)
-    y = rearrange(y, "B To Lx Ly F -> B (To F) Lx Ly")
-
-    # the applied field the model is conditioned on, in units of the train split's rms |H|
-    h = batch["constant_scalars"][:, 3:5].to(device)
-    h = (h - H_RANGE[0]) / (H_RANGE[1] - H_RANGE[0])
-    return x, y, h
+def numpy_collate(batch):
+    """
+    Collate function specifies how to combine a list of data samples into a batch.
+    default_collate creates pytorch tensors, then tree_map converts them into numpy arrays.
+    """
+    return jtu.tree_map(np.asarray, default_collate(batch))
 
 
-def prepare_batch_h_field(batch, device):
-    x = batch["input_fields"]
-    x = x.to(device)
-    x = rearrange(x, "B Ti Lx Ly F -> B (Ti F) Lx Ly")
+def conditioning(scalars):
+    """`constant_scalars` (B, 6) -> the model's `cond` (B, 4).
 
-    y = batch["output_fields"]
-    y = y.to(device)
-    y = rearrange(y, "B To Lx Ly F -> B (To F) Lx Ly")
-
-    h_scalars = batch["constant_scalars"][:, 3:5].to(device)
-    h_scalars = (h_scalars - H_RANGE[0]) / (H_RANGE[1] - H_RANGE[0])
-
-    B, _, *L = x.shape
-    h = torch.ones((B, 2, *L), device=device)
-    h[:, 0] *= h_scalars[0]
-    h[:, 1] *= h_scalars[1]
-
-    return x, y, h
+    The applied field is nondimensionalised by Ms, matching the demag channels
+    the model computes. `s_enc = 0`: one solver step (10 ps) per model call.
+    """
+    H = scalars[:, 3:6] / scalars[:, :1]
+    return np.concatenate([H, np.zeros_like(H[:, :1])], axis=1)
 
 
-@torch.no_grad()
-def rollout(model, x: Tensor, meta: Tensor, n_steps: int) -> Tensor:
-    """Autoregressively predict n_steps frames from a context window.
+def prepare_batch(batch):
+    """One-step batch -> `(m0, m1, cond)` in the model's layout, all numpy.
 
-    x: (B, Ti, Lx, Ly, F), as WellDataset serves input_fields.
-    meta: (B, 3), the scaled applied field, as prepare_batch returns it.
+    m0, m1: (B, 3, Lx, Ly); cond: (B, 4).
+    """
+    m0 = rearrange(batch["input_fields"], "B 1 Lx Ly F -> B F Lx Ly")
+    m1 = rearrange(batch["output_fields"], "B 1 Lx Ly F -> B F Lx Ly")
+    return m0, m1, conditioning(batch["constant_scalars"])
+
+
+@eqx.filter_jit
+def predict(model, m0, cond):
+    """One step for a batch: (B, 3, Lx, Ly), (B, 4) -> (B, 3, Lx, Ly)."""
+    return jax.vmap(model)(m0, cond)
+
+
+@eqx.filter_jit
+def rollout(model, x, cond, n_steps: int):
+    """Autoregressively predict n_steps frames from one frame.
+
+    x: (B, 1, Lx, Ly, F), as WellDataset serves input_fields.
+    cond: (B, 4), as `conditioning` returns it.
     returns: (B, n_steps, Lx, Ly, F), same layout as output_fields.
     """
-    n_fields = x.shape[-1]
-    x = rearrange(x, "B Ti Lx Ly F -> B (Ti F) Lx Ly")
+    m0 = rearrange(x, "B 1 Lx Ly F -> B F Lx Ly")
 
-    frames = []
-    for _ in range(n_steps):
-        pred = model(x, meta)
-        frames.append(pred)
-        x = torch.cat([x[:, n_fields:], pred], dim=1)  # slide window one frame
+    def step(m, _):
+        m = jax.vmap(model)(m, cond)
+        return m, m
 
-    return rearrange(
-        torch.cat(frames, dim=1), "B (T F) Lx Ly -> B T Lx Ly F", F=n_fields
-    )
+    _, frames = jax.lax.scan(step, m0, None, length=n_steps)
+    return rearrange(frames, "T B F Lx Ly -> B T Lx Ly F")
 
 
-@torch.no_grad()
-def one_step_preds(model, loader, device):
+def one_step_preds(model, loader):
     """Teacher-forced one-step predictions over a whole loader.
 
-    returns: (pred, truth), both (N, 1, Lx, Ly, F) on cpu -- the layout the
+    returns: (pred, truth), both (N, 1, Lx, Ly, F) numpy -- the layout the
     well's metrics reduce over.
     """
     preds, truths = [], []
     for batch in tqdm(loader):
-        x, y, h = prepare_batch(batch, device)
-        preds.append(model(x, h).cpu())
-        truths.append(y.cpu())
+        m0, m1, cond = prepare_batch(batch)
+        preds.append(np.asarray(predict(model, m0, cond)))
+        truths.append(m1)
 
-    n_fields = truths[0].shape[1]  # n_steps_output=1, so channels == n_fields
-    pattern = "B (T F) Lx Ly -> B T Lx Ly F"
+    pattern = "B F Lx Ly -> B 1 Lx Ly F"
     return (
-        rearrange(torch.cat(preds), pattern, F=n_fields),
-        rearrange(torch.cat(truths), pattern, F=n_fields),
+        rearrange(np.concatenate(preds), pattern),
+        rearrange(np.concatenate(truths), pattern),
     )
 
 
@@ -100,20 +96,4 @@ def relative_norm_error(m):
 
 
 def device_info():
-    try:
-        print(torch.cuda.get_device_name(0))
-    except RuntimeError:
-        print("no gpus found")
-
-
-def normalize(m: Tensor) -> Tensor:
-    assert len(m.shape) == 4  # (B, C, W, H)
-    return m / LA.norm(m, dim=1, keepdims=True)
-
-
-def numpy_collate(batch):
-    """
-    Collate function specifies how to combine a list of data samples into a batch.
-    default_collate creates pytorch tensors, then tree_map converts them into numpy arrays.
-    """
-    return jtu.tree_map(np.asarray, default_collate(batch))
+    print(jax.devices())
