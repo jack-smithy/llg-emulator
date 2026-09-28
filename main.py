@@ -10,17 +10,10 @@ import optax
 import torch
 from the_well.data import WellDataset
 from tqdm import tqdm
+import pdequinox as pdeqx
 
-from generate_varied_field import DX
-from resnet import LLGEmulator, ModelConfig
-from physics import demag_cache
-from training import (
-    count_parameters,
-    loss_fn,
-    save_model,
-    trainable_filter,
-    update_fn,
-)
+from model_config import ModelConfig
+from training import build_model, loss_fn, save_model, update_fn
 from utils import SCALARS, numpy_collate, prepare_batch
 
 jax.config.update("jax_compilation_cache_dir", ".jax_cache")
@@ -110,27 +103,16 @@ val_loader = torch.utils.data.DataLoader(
 model_config = ModelConfig(
     hidden_channels=args.hidden_channels,
     num_blocks=args.num_blocks,
-    mesh_n=tuple(train_dataset.metadata.spatial_resolution),
-    mesh_dx=DX,
-    nodal=False,
 )
 key, model_key = jr.split(key)
-demag = demag_cache(
-    model_config.mesh_n,
-    model_config.mesh_dx,
-    1.0,
-    model_config.demag_p,
-    nodal=model_config.nodal,
-)
-
-model = LLGEmulator(config=model_config, demag=demag, key=model_key)
-print(f"{count_parameters(model)} trainable parameters")
+model = build_model(model_config, model_key)
+print(f"{pdeqx.count_parameters(model)} trainable parameters")
 
 optimizer = optax.chain(
     optax.clip_by_global_norm(1.0),
     optax.adamw(learning_rate=LEARNING_RATE, weight_decay=1e-5),
 )
-opt_state = optimizer.init(eqx.filter(model, trainable_filter(model)))
+opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
 
 stats["train_history"] = []
 stats["val_history"] = []
@@ -146,7 +128,8 @@ for epoch in range(EPOCHS):
     inference_model = eqx.nn.inference_mode(model)
     losses = []
     for batch in tqdm(val_loader, mininterval=10):
-        loss = loss_fn(inference_model, *prepare_batch(batch))
+        batch = prepare_batch(batch)
+        loss = loss_fn(inference_model, *batch)
         losses.append(loss)
     val_loss = float(jnp.stack(losses).mean())
     stats["val_history"].append(val_loss)

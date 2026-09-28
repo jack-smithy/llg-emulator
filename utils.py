@@ -2,8 +2,8 @@
 
 `WellDataset` serves channel-last frames, `(B, T, Lx, Ly, F)`, and the model
 takes one channel-first frame per sample, `(3, Lx, Ly)`, plus a conditioning
-vector `[H_ext / Ms (3), s_enc (1)]` (see `model.LLGEmulator`). Everything here
-is the layout change and the batching around it.
+vector `[Hx, Hy] / Ms` (see `training.build_model`). Everything here is the
+layout change and the batching around it.
 """
 
 import equinox as eqx
@@ -28,19 +28,18 @@ def numpy_collate(batch):
 
 
 def conditioning(scalars):
-    """`constant_scalars` (B, 6) -> the model's `cond` (B, 4).
+    """`constant_scalars` (B, 6) -> `cond` (B, 2): `[Hx, Hy] / Ms`.
 
-    The applied field is nondimensionalised by Ms, matching the demag channels
-    the model computes. `s_enc = 0`: one solver step (10 ps) per model call.
+    Hz is always zero in the data and Ms is constant, so this is the whole
+    per-sample variation, nondimensionalised.
     """
-    H = scalars[:, 3:6] / scalars[:, :1]
-    return np.concatenate([H, np.zeros_like(H[:, :1])], axis=1)
+    return scalars[:, 3:5] / scalars[:, :1]
 
 
 def prepare_batch(batch):
     """One-step batch -> `(m0, m1, cond)` in the model's layout, all numpy.
 
-    m0, m1: (B, 3, Lx, Ly); cond: (B, 4).
+    m0, m1: (B, 3, Lx, Ly); cond: (B, 2).
     """
     m0 = rearrange(batch["input_fields"], "B 1 Lx Ly F -> B F Lx Ly")
     m1 = rearrange(batch["output_fields"], "B 1 Lx Ly F -> B F Lx Ly")
@@ -49,7 +48,7 @@ def prepare_batch(batch):
 
 @eqx.filter_jit
 def predict(model, m0, cond):
-    """One step for a batch: (B, 3, Lx, Ly), (B, 4) -> (B, 3, Lx, Ly)."""
+    """One step for a batch: (B, 3, Lx, Ly), (B, 2) -> (B, 3, Lx, Ly)."""
     return jax.vmap(model)(m0, cond)
 
 
@@ -58,7 +57,7 @@ def rollout(model, x, cond, n_steps: int):
     """Autoregressively predict n_steps frames from one frame.
 
     x: (B, 1, Lx, Ly, F), as WellDataset serves input_fields.
-    cond: (B, 4), as `conditioning` returns it.
+    cond: (B, 2), as `conditioning` returns it.
     returns: (B, n_steps, Lx, Ly, F), same layout as output_fields.
     """
     m0 = rearrange(x, "B 1 Lx Ly F -> B F Lx Ly")
@@ -78,7 +77,7 @@ def one_step_preds(model, loader):
     well's metrics reduce over.
     """
     preds, truths = [], []
-    for batch in tqdm(loader):
+    for batch in tqdm(loader, mininterval=10):
         m0, m1, cond = prepare_batch(batch)
         preds.append(np.asarray(predict(model, m0, cond)))
         truths.append(m1)

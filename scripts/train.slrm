@@ -8,11 +8,11 @@
 
 set -euo pipefail
 
-CONFIGURATION="baseline-long"
+CONFIGURATION="resnet-constant-embedding"
 DATASET="llg_field_switching"
 LEARNING_RATE=1e-4
 BATCH_SIZE=16
-EPOCHS=32
+EPOCHS=1
 HIDDEN_CHANNELS=64
 NUM_BLOCKS=4
 SEED=1
