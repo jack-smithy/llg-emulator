@@ -20,26 +20,31 @@ jax.config.update("jax_compilation_cache_dir", ".jax_cache")
 
 parser = ArgumentParser()
 parser.add_argument("--seed", type=int, required=True)
+parser.add_argument("--arch", type=str, required=True)
 parser.add_argument("--configuration", type=str, required=True)
 parser.add_argument("--dataset", type=str, required=True)
 parser.add_argument("--learning-rate", type=float, default=5e-3)
 parser.add_argument("--batch-size", type=int, default=16)
 parser.add_argument("--epochs", type=int, default=5)
-parser.add_argument("--hidden-channels", type=int, default=160)
-parser.add_argument("--num-blocks", type=int, default=1)
-parser.add_argument("--num-levels", type=int, default=3)
-parser.add_argument("--num-heads", type=int, default=40)
+parser.add_argument("--hidden-channels", type=int, default=64)
+parser.add_argument("--num-blocks", type=int, default=4)
+parser.add_argument("--num-modes", type=int, default=32)
 args = parser.parse_args()
 
 path = f"datasets/{args.dataset}"
-results_path = Path("results") / args.dataset / args.configuration / f"seed_{args.seed}"
+results_path = (
+    Path("results")
+    / args.dataset
+    / args.arch
+    / args.configuration
+    / f"seed_{args.seed}"
+)
 results_path.mkdir(exist_ok=True, parents=True)
 
 torch.manual_seed(args.seed)
 generator = torch.Generator().manual_seed(args.seed)
 key = jr.PRNGKey(args.seed)
 
-device = jax.devices()[0]
 
 IN_FRAMES = 1  # the model is a one-step map m_t -> m_{t+1}
 OUT_FRAMES = 1
@@ -109,8 +114,7 @@ val_loader = torch.utils.data.DataLoader(
 model_config = ModelConfig(
     hidden_channels=args.hidden_channels,
     num_blocks=args.num_blocks,
-    num_levels=args.num_levels,
-    num_heads=args.num_heads,
+    num_modes=args.num_modes,
 )
 
 key, model_key = jr.split(key)

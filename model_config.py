@@ -9,6 +9,5 @@ from dataclasses import dataclass
 class ModelConfig:
     hidden_channels: int = 32
     num_blocks: int = 4
-    num_levels: int = 4
-    num_heads: int = 8
+    num_modes: int = 32
     activation: Callable = jax.nn.gelu

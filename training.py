@@ -14,7 +14,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jaxtyping import PyTree
-from pdequinox.arch import Flower
+from pdequinox.arch import ClassicFNO
 from model import ResidualEmulator
 from model_config import ModelConfig
 
@@ -22,15 +22,14 @@ COND_DIM = 2  # [Hx, Hy] / Ms
 
 
 def build_model(config: ModelConfig, key) -> eqx.Module:
-    network = Flower(
+    network = ClassicFNO(
         num_spatial_dims=2,
-        in_channels=3 + COND_DIM,  # m (3) + the embedded conditioning
+        in_channels=5 + COND_DIM,  # m (3) + coords (2) + the embedded conditioning
         out_channels=3,
         hidden_channels=config.hidden_channels,
         num_blocks=config.num_blocks,
-        num_levels=config.num_levels,
-        num_heads=config.num_heads,
         activation=config.activation,
+        num_modes=config.num_modes,
         boundary_mode="neumann",  # finite thin film, not periodic
         key=key,
     )
@@ -59,8 +58,7 @@ def save_model(model: eqx.Module, config: ModelConfig, path: Path, tag: str):
     meta = {
         "hidden_channels": config.hidden_channels,
         "num_blocks": config.num_blocks,
-        "num_levels": config.num_levels,
-        "num_heads": config.num_heads,
+        "num_modes": config.num_modes,
     }
     # rewrite every time: a stale sidecar builds the wrong skeleton on load
     (path / "metadata.json").write_text(json.dumps(meta))
@@ -73,7 +71,6 @@ def load_model(path: Path, key, tag: str) -> eqx.Module:
     config = ModelConfig(
         hidden_channels=meta["hidden_channels"],
         num_blocks=meta["num_blocks"],
-        num_heads=meta["num_heads"],
-        num_levels=meta["num_levels"],
+        num_modes=meta["num_modes"],
     )
     return eqx.tree_deserialise_leaves(path / f"{tag}.eqx", build_model(config, key))

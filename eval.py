@@ -30,9 +30,9 @@ N_FRAMES_ROLLOUT = 100
 ROLLOUT_IDX = 7
 
 
-def main(seed, configuration, dataset):
+def main(seed, configuration, dataset, arch):
     path = f"datasets/{dataset}"
-    results_path = Path("results") / dataset / configuration / f"seed_{seed}"
+    results_path = Path("results") / dataset / arch / configuration / f"seed_{seed}"
 
     with open(results_path / "stats.json", "r") as f:
         stats = json.load(f)
@@ -80,7 +80,11 @@ def main(seed, configuration, dataset):
     truth = sample["input_fields"]  # (1, N_FRAMES_ROLLOUT, Lx, Ly, F)
     cond = conditioning(sample["constant_scalars"])
     pred = rollout(
-        model, truth[:, :IN_FRAMES], cond, n_steps=truth.shape[1] - IN_FRAMES
+        model,
+        truth[:, :IN_FRAMES],
+        cond,
+        sample["space_grid"],
+        n_steps=truth.shape[1] - IN_FRAMES,
     )
     truth = truth[:, IN_FRAMES:]
 
@@ -124,5 +128,11 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--configuration", type=str, required=True)
     parser.add_argument("--dataset", type=str, required=True)
+    parser.add_argument("--arch", type=str, required=True)
     args = parser.parse_args()
-    main(seed=args.seed, configuration=args.configuration, dataset=args.dataset)
+    main(
+        seed=args.seed,
+        configuration=args.configuration,
+        dataset=args.dataset,
+        arch=args.arch,
+    )

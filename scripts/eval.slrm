@@ -8,19 +8,21 @@
 
 set -euo pipefail
 
-CONFIGURATION="analytical-demag"
 DATASET="llg_field_switching"
+ARCH="fno"
+CONFIGURATION="test"
 
 echo "Job started on $(date)"
 echo "Running on node(s): $SLURM_NODELIST"
 echo "Array task (seed): $SLURM_ARRAY_TASK_ID"
 echo "Dataset: $DATASET"
-echo "Configuration: $CONFIGURATION"
+echo "Configuration: $ARCH $CONFIGURATION"
 
 uv run python -c "import utils; utils.device_info()"
 
-# the model is rebuilt from results/$DATASET/$CONFIGURATION/seed_<seed>/metadata.json
+# the model is rebuilt from results/$DATASET/$ARCH/$CONFIGURATION/seed_<seed>/metadata.json
 uv run eval.py \
     --seed $SLURM_ARRAY_TASK_ID \
+    --arch $ARCH \
     --configuration $CONFIGURATION \
     --dataset $DATASET
