@@ -11,8 +11,8 @@ import torch
 from the_well.benchmark.metrics import MSE, VRMSE
 from the_well.data import WellDataset
 
+from model import load_model
 from plot import animate_channels, plot_learning_curves, plot_norms, plot_rollout
-from training import load_model
 from utils import (
     conditioning,
     numpy_collate,
@@ -67,7 +67,7 @@ def main(seed, configuration, dataset, arch):
         json.dump(stats, f)
     print(f"one-step metrics: {stats['metrics']}")
 
-    ### test on sp4
+    ### free rollout of one validation trajectory
     rollout_dataset = WellDataset(
         path=path,
         well_split_name="valid",
@@ -120,7 +120,7 @@ def main(seed, configuration, dataset, arch):
     anim_err = animate_channels(ref - pred)
     anim_err.save(results_path / "err.gif", writer="pillow")
     plt.close()
-    print("plotted sp4 animations")
+    print("plotted rollout animations")
 
 
 if __name__ == "__main__":

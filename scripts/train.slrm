@@ -1,9 +1,9 @@
 #!/bin/bash
 #
 #SBATCH -J train
-#SBATCH --time="1:00:00"
+#SBATCH --time="4:00:00"
 #SBATCH --gres=gpu:1g.24gb:1
-#SBATCH -o logs/%x-%A.out
+#SBATCH -o logs/%x-%j.out
 
 
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
@@ -12,10 +12,10 @@ set -euo pipefail
 
 DATASET="llg_field_switching"
 ARCH="fno"
-CONFIGURATION="test"
-LEARNING_RATE=1e-4
-BATCH_SIZE=32
-EPOCHS=1
+CONFIGURATION="full-3"
+LEARNING_RATE=1e-3
+BATCH_SIZE=128
+EPOCHS=32
 HIDDEN_CHANNELS=64
 NUM_MODES=32
 NUM_BLOCKS=4

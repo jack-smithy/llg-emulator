@@ -1,8 +1,9 @@
 """Permalloy LLG trajectories with a varying applied field, in `the_well` HDF5 format.
 
-Runs in the project env: `uv run generate_varied_field.py --out <dir>`.
+Runs in the project env, from the repo root:
+`uv run python -m datagen.generate_varied_field --out <dir>`.
 
-Sibling of `generate_fixed_field.py`, which holds the applied field at SP4 field 1 and
+Sibling of `datagen/generate_fixed_field.py`, which holds the applied field at SP4 field 1 and
 varies only the initial condition. Here the magnet is the same 256x256x1 cells of
 5x5x3 nm permalloy in every sample, and **the applied field varies per trajectory**:
 in-plane, each of Hx, Hy uniform on +/-50 mT. Initial conditions cycle through random
@@ -29,7 +30,6 @@ Layout written (what `WellDataset(path=<out>, well_split_name="train")` expects)
 import argparse
 import json
 import math
-import tempfile
 from pathlib import Path
 
 import h5py
@@ -117,7 +117,7 @@ def simulate(seed, init_fn, n=N):
 
     Returns `(n_t, nx, ny, 3)` float32 — the singleton z axis is squeezed out. `n` is
     the grid, for a caller simulating a different film than this module's
-    (`generate_geometries.py`).
+    (`datagen/generate_geometries.py`).
     """
     # imported here so --self-check runs without pulling in torch
     import torch
@@ -160,7 +160,7 @@ def create_split(path, n_traj, n_t, dataset_name, n=N):
 
     Written incrementally rather than stacked: one trajectory is 79 MB, so a split's
     worth of them is better off going straight to disk. `n` is the grid, for a caller
-    writing a different size than this module's (`generate_large.py`).
+    writing a different size than this module's (`datagen/generate_large.py`).
     """
     const = {k: MATERIAL[k] for k in ("Ms", "A", "alpha")}
     nx, ny = n[0], n[1]

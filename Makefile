@@ -10,14 +10,18 @@ cpu:
 clear-logs:
 	rm -rf logs/*.out
 
-train:
+# slurm needs logs/ to exist before it can open the job's -o file
+logs:
+	mkdir -p logs
+
+train: logs
 	sbatch scripts/train.slrm
 
-train-array:
+train-array: logs
 	sbatch scripts/train_array.slrm
 
-eval:
+eval: logs
 	sbatch scripts/eval.slrm
 
-eval-geometries:
+eval-geometries: logs
 	sbatch scripts/eval_geometries.slrm

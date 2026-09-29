@@ -1,15 +1,18 @@
 #!/bin/bash
 #
-#SBATCH -J datagen
+#SBATCH -J datagen-fixed
 #SBATCH --time="2:00:00"
 #SBATCH --gres=gpu:1g.24gb:1
 #SBATCH --requeue
 #SBATCH -o logs/%x-%j.out
 
+set -euo pipefail
+
 echo "Job started on $(date)"
 echo "Running on node(s): $SLURM_NODELIST"
 
-uv run generate.py \
+# the older SP4 dataset: 100x25 films under a fixed field, only the initial condition varies
+uv run python -m datagen.generate_fixed_field \
     --n-train 128 \
     --n-valid 32 \
     --out datasets/permalloy_thin_film_switching \

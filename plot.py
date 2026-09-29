@@ -86,7 +86,7 @@ def plot_rollout_mse(curves):
     ax.set_xlabel("t")
     ax.set_ylabel("rollout MSE")
     ax.grid(alpha=0.5)
-    ax.set_xlim(left=1, right=mse.shape[0])
+    ax.set_xlim(left=1, right=mse.shape[0])  # type: ignore
     ax.legend(frameon=False, fontsize=7)
     fig.tight_layout()
     return fig, ax

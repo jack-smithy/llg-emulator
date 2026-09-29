@@ -1,7 +1,8 @@
 """One permalloy LLG trajectory on the largest film a full GPU can hold, written as the
 `test` split of the varied-field dataset.
 
-Runs in the project env: `uv run generate_large.py --out datasets/permalloy_varied_field`.
+Runs in the project env, from the repo root:
+`uv run python -m datagen.generate_large --out datasets/llg_field_switching/large`.
 
 Same 5x5x3 nm cells, material, dt and 1 ns as `generate_varied_field.py`, but a single
 N x N film instead of 256x256. The initial condition is SP4's s-state (+x with the ends
@@ -10,8 +11,8 @@ canted, relaxed at zero field) and the applied field is SP4 field 1, both taken 
 trained on 256x256 films holds up on one N/256 times wider.
 
 N is the largest square on which *both* the magnum.np solve and a no-grad forward pass of
-train.py's FNO (in-context 1, hidden 64, 2 layers, batch of one) fit on one RTX PRO 6000
-(95 GiB), and the FNO is the tighter of the two. At 6144^2 the forward peaks at 73 GiB
+the FNO (in-context 1, hidden 64, 2 layers, batch of one; measured with the earlier
+PyTorch model) fit on one RTX PRO 6000 (95 GiB), and the FNO is the tighter of the two. At 6144^2 the forward peaks at 73 GiB
 allocated / 92 GiB reserved; 6400^2 and up run out of memory with the default allocator
 (6656^2 still fits under PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True, at 85 GiB).
 The LLG solve needs 23 GiB at 6144^2, still fits at 10240^2 (63 GiB) and only fails at
@@ -22,7 +23,7 @@ Frames go straight into the HDF5 file as they are produced: a trajectory this si
 tens of GB, so it never exists whole in memory. How long the run took is stored in the
 file's root attributes (`relax_seconds`, `relax_converged`, `llg_seconds`, `llg_steps`,
 `gpu`) and printed at the end. The file is written under a `.part` suffix, which the
-well's glob ignores, and renamed once complete, so a concurrent `train.py` never opens a
+well's glob ignores, and renamed once complete, so a concurrent `main.py` never opens a
 half-written sample.
 """
 
@@ -32,8 +33,8 @@ from pathlib import Path
 
 import torch
 
-from generate_fixed_field import DT, DX, H_EXT, MATERIAL, init_s_state
-from generate_varied_field import FIELDS, H_NAMES, N_T, create_split
+from datagen.generate_fixed_field import DT, DX, H_EXT, MATERIAL, init_s_state
+from datagen.generate_varied_field import FIELDS, H_NAMES, N_T, create_split
 
 N = (6144, 6144, 1)
 

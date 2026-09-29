@@ -7,14 +7,13 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 import optax
+import pdequinox as pdeqx
 import torch
 from the_well.data import WellDataset
 from tqdm import tqdm
-import pdequinox as pdeqx
 
-from model_config import ModelConfig
-from training import build_model, loss_fn, save_model, update_fn
-from utils import SCALARS, numpy_collate, prepare_batch
+from model import ModelConfig, build_model, save_model
+from utils import SCALARS, numpy_collate, prepare_batch, loss_fn, update_fn
 
 jax.config.update("jax_compilation_cache_dir", ".jax_cache")
 

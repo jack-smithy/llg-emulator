@@ -13,11 +13,10 @@ echo "Job started on $(date)"
 echo "Running on node(s): $SLURM_NODELIST"
 echo "Array task $SLURM_ARRAY_TASK_ID"
 
-mkdir -p logs
+# the training dataset: one shard per array task, llg_<split>_<shard>.hdf5
+OUT=datasets/llg_field_switching
 
-OUT=datasets/permalloy_varied_field_large
-
-uv run generate_varied_field.py \
+uv run python -m datagen.generate_varied_field \
     --n-train 256 \
     --n-valid 32 \
     --n-test 8 \
@@ -27,4 +26,4 @@ uv run generate_varied_field.py \
     --n-shards "${SLURM_ARRAY_TASK_COUNT:-8}"
 
 echo "when the whole array is done, sum the parts into stats.yaml:"
-echo "  uv run generate_varied_field.py --out $OUT --merge-stats"
+echo "  uv run python -m datagen.generate_varied_field --out $OUT --merge-stats"

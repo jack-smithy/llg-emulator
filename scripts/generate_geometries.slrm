@@ -10,18 +10,18 @@
 
 set -euo pipefail
 
+DATASET="llg_field_switching"
+
 echo "Job started on $(date)"
 echo "Running on node(s): $SLURM_NODELIST"
 
-mkdir -p logs
-
-# one task per geometry, in generate_geometries.GEOMETRIES order; extra sbatch
+# one task per geometry, in datagen/generate_geometries.GEOMETRIES order; extra sbatch
 # arguments pass through, e.g. `sbatch scripts/generate_geometries.slrm --n-samples 4`
 GEOMETRY=$(uv run python -c \
-    "import sys, generate_geometries as g; print(list(g.GEOMETRIES)[int(sys.argv[1])])" \
+    "import sys; from datagen.generate_geometries import GEOMETRIES; print(list(GEOMETRIES)[int(sys.argv[1])])" \
     "$SLURM_ARRAY_TASK_ID")
 echo "Geometry: $GEOMETRY"
 
-uv run generate_geometries.py \
-    --out datasets/llg_field_switching/geometries \
+uv run python -m datagen.generate_geometries \
+    --out datasets/$DATASET/geometries \
     --geometry "$GEOMETRY" "$@"

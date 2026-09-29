@@ -1,6 +1,7 @@
 """Held-out film geometries for an emulator trained on 256x256 films.
 
-Runs in the project env: `uv run generate_geometries.py --out <dir> --geometry sq512`.
+Runs in the project env, from the repo root:
+`uv run python -m datagen.generate_geometries --out <dir> --geometry sq512`.
 `scripts/generate_geometries.slrm` runs one array task per entry of `GEOMETRIES`.
 
 Same 5x5x3 nm permalloy cells, material, dt, 1 ns, applied-field distribution and
@@ -18,9 +19,9 @@ a split to share one spatial resolution:
     <out>/<geometry>/data/test/llg_test.hdf5
 
 Load one with `WellDataset(path=f"{out}/{geometry}", well_split_name="test",
-use_normalization=False)` and retarget a trained model with
-`training.load_model(..., n=dataset.metadata.spatial_resolution)`: the backbone is fully
-convolutional, only the demag tensor is rebuilt.
+use_normalization=False)`; `datagen/eval_geometries.py` runs a trained model on all of
+them. The network is fully convolutional and reads the cell coordinates from the sample,
+so the 256x256 weights run on any grid unchanged.
 
 `--geometry` also takes an ad-hoc `NXxNY`, e.g. `--geometry 300x200`. The file is written
 under a `.part` suffix, which the well's glob ignores, and renamed once complete; a
@@ -32,7 +33,7 @@ import argparse
 import time
 from pathlib import Path
 
-from generate_varied_field import (
+from datagen.generate_varied_field import (
     INITS,
     MU_0,
     N_T,

@@ -1,23 +1,15 @@
-"""Glue between `the_well`'s loaders and the JAX model.
-
-`WellDataset` serves channel-last frames, `(B, T, Lx, Ly, F)`, and the model
-takes one channel-first frame per sample with the cell grid appended,
-`(5, Lx, Ly)` = m (3) + the cell centres (x, y) in um (see `with_coords`), plus a conditioning
-vector `[Hx, Hy] / Ms` (see `training.build_model`). Everything here is the
-layout change and the batching around it.
-"""
-
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.tree_util as jtu
 import numpy as np
 from einops import rearrange
+from jaxtyping import PyTree
 from torch.utils.data import default_collate
 from tqdm import tqdm
 
 # `batch["constant_scalars"]` in the order the generator writes them
-# (generate_varied_field.create_split); train.py checks the dataset agrees.
+# (datagen.generate_varied_field.create_split); main.py checks the dataset agrees.
 SCALARS = ("Ms", "A", "alpha", "Hx", "Hy", "Hz")
 
 
@@ -114,3 +106,16 @@ def relative_norm_error(m):
 
 def device_info():
     print(jax.devices())
+
+
+@eqx.filter_jit
+def loss_fn(model, m0, m1, cond):
+    return jnp.mean(jnp.square(jax.vmap(model)(m0, cond) - m1))
+
+
+@eqx.filter_jit(donate="all-except-first")
+def update_fn(model: eqx.Module, batch: PyTree, optimizer, opt_state):
+    loss, grad = eqx.filter_value_and_grad(loss_fn)(model, *batch)
+    updates, opt_state = optimizer.update(grad, opt_state, model)
+    model = eqx.apply_updates(model, updates)
+    return model, opt_state, loss

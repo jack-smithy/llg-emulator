@@ -11,11 +11,13 @@ set -euo pipefail
 echo "Job started on $(date)"
 echo "Running on node(s): $SLURM_NODELIST"
 
-mkdir -p logs
+# smaller single-job variant of generate_varied_array.slrm; it writes llg_<split>_0.hdf5,
+# so it gets its own directory rather than overwriting shard 0 of the real dataset
+OUT=datasets/llg_field_switching_small
 
-uv run generate_varied_field.py \
+uv run python -m datagen.generate_varied_field \
     --n-train 64 \
     --n-valid 8 \
     --n-test 8 \
-    --out datasets/permalloy_varied_field \
+    --out "$OUT" \
     --seed 0

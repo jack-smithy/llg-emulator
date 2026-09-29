@@ -1,14 +1,14 @@
 """Roll a trained emulator out on the held-out film geometries.
 
-Runs in the project env:
-`uv run eval_geometries.py --seed 2 --arch fno --configuration test --dataset llg_field_switching`;
+Runs in the project env, from the repo root:
+`uv run python -m datagen.eval_geometries --seed 2 --arch fno --configuration test --dataset llg_field_switching`;
 `scripts/eval_geometries.slrm` runs it on one MIG slice.
 
 The model is fully convolutional and takes the applied field as constant channels and
 the film's cell-centre (x, y) coordinates in um as two input channels (`utils.with_coords`,
 from the sample's own `space_grid`, so every geometry sits on the training set's real-space
 scale), so weights trained on 256x256 films run on any grid unchanged. Every well root under
-`datasets/<dataset>/geometries/<name>` (written by `generate_geometries.py`) is
+`datasets/<dataset>/geometries/<name>` (written by `datagen/generate_geometries.py`) is
 evaluated, plus the 256x256 `test` split of the training dataset itself, which shares
 the same 8 seeds and so the same applied fields: the in-distribution reference. Per
 geometry, as `eval.py` does on the validation split:
@@ -47,8 +47,8 @@ from the_well.benchmark.metrics import MSE, VRMSE
 from the_well.data import WellDataset
 from tqdm import tqdm
 
+from model import load_model
 from plot import plot_rollout, plot_rollout_mse
-from training import load_model
 from utils import conditioning, numpy_collate, predict, prepare_batch, rollout
 
 jax.config.update("jax_compilation_cache_dir", ".jax_cache")

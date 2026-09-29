@@ -1,8 +1,9 @@
 """Permalloy thin-film LLG trajectories in `the_well` HDF5 format.
 
-Self-contained: run it with `uv run --script src/datagen/generate_well.py`, which
-builds its own environment (magnum.np drags in torch; keeping it out of the
-project's jax env is deliberate). Nothing here imports `llg_emulator`.
+Runs in the project env, from the repo root:
+`uv run python -m datagen.generate_fixed_field --out <dir>`. This is the older
+fixed-field dataset (`datasets/permalloy_thin_film_switching`); the current one is
+written by `generate_varied_field.py`.
 
 Setup is muMAG standard problem #4: 100x25x1 cells of 5x5x3 nm permalloy, the SP4
 applied field, 101 frames at dt = 10 ps. **The only thing that varies between
@@ -23,7 +24,6 @@ three `t0` scalar fields `mx, my, mz` — the loader concatenates them back into
 
 import argparse
 import math
-import os
 from pathlib import Path
 
 import h5py

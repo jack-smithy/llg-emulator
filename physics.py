@@ -12,9 +12,9 @@ machinery at construction time, store it as a (non-trainable) buffer, and apply
 neuralmag's `h_cell` convolution on every call. The module is therefore a pure,
 jit/vmap-friendly Equinox module with no learnable parameters.
 
-**Discretization.** The solver (`src/datagen/generate.py`) runs on a *2D* mesh of
-`n = (nx, ny)` cells and stores `m` on the **nodes**, i.e. `(nx+1, ny+1)` values —
-that is what the training data contains. The convolution, however, is cell-based,
+**Discretization.** A neuralmag solver runs on a *2D* mesh of `n = (nx, ny)` cells
+and stores `m` on the **nodes**, i.e. `(nx+1, ny+1)` values. The convolution,
+however, is cell-based,
 so a nodal call has to follow neuralmag's own node kernel (see
 `neuralmag.field_terms.demag_field.DemagField.register`):
 
