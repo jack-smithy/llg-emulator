@@ -5,21 +5,16 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "einops>=0.8.2",
-    "equinox>=0.13.8",
-    "grain>=0.2.17",
-    "ipykernel>=7.3.0",
-    "jax[cuda12]>=0.10.0",
-    "jaxtyping>=0.3.9",
-    "matplotlib>=3.10.9",
-    "nbformat>=5.10.4",
+    "accelerate>=1.15.0",
+    "h5py>=3.16.0",
+    "jax[cuda13]>=0.11.2",
+    "magnumnp>=2.2.0",
     "neuralmag[jax]>=1.0.0",
     "optax>=0.2.8",
-    "pdequinox>=0.1.2",
-    "plotly>=6.8.0",
-    "pyevtk>=1.7.0",
-    "tqdm>=4.67.3",
-    "wandb>=0.18.0",
+    "pdequinox",
+    "pyyaml>=6.0.3",
+    "the-well>=1.2.0",
+    "torch>=2.14.0",
 ]
 
 [build-system]
@@ -31,8 +26,16 @@ packages = ["src/llg_emulator", "src/datagen"]
 
 [dependency-groups]
 dev = [
+    "ipykernel>=7.3.0",
     "ruff>=0.16.4",
 ]
 
 [project.scripts]
 train = "llg_emulator.train:main"
+
+
+[tool.ruff.lint]
+ignore=["F722", "F541", "E402", "I001", "PLR0402"]
+
+[tool.uv.sources]
+pdequinox = { path = "../pdequinox" }

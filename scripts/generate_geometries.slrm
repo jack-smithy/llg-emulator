@@ -1,0 +1,27 @@
+#!/bin/bash
+#
+#SBATCH -J datagen-geom
+#SBATCH --time="16:00:00"
+#SBATCH --gres=gpu:1g.24gb:1
+#SBATCH --mem=24G
+#SBATCH --array=0-7
+#SBATCH --requeue
+#SBATCH -o logs/%x-%A_%a.out
+
+set -euo pipefail
+
+echo "Job started on $(date)"
+echo "Running on node(s): $SLURM_NODELIST"
+
+mkdir -p logs
+
+# one task per geometry, in generate_geometries.GEOMETRIES order; extra sbatch
+# arguments pass through, e.g. `sbatch scripts/generate_geometries.slrm --n-samples 4`
+GEOMETRY=$(uv run python -c \
+    "import sys, generate_geometries as g; print(list(g.GEOMETRIES)[int(sys.argv[1])])" \
+    "$SLURM_ARRAY_TASK_ID")
+echo "Geometry: $GEOMETRY"
+
+uv run generate_geometries.py \
+    --out datasets/llg_field_switching/geometries \
+    --geometry "$GEOMETRY" "$@"

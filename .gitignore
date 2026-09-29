@@ -9,6 +9,7 @@ wheels/
 # Virtual environments
 .venv
 .jax_cache
+.nm_cache
 results
 
 data/
@@ -17,6 +18,8 @@ wandb
 artifacts
 notebooks
 weights
+
+test.ipynb
 .nm_cache
 archive
 # LaTeX build artifacts (main.tex is the source; figures/*.pdf are kept)

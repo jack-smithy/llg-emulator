@@ -1,0 +1,1 @@
+uvx hf download jack-smithy/permalloy_thin_film_switching --repo-type=dataset
