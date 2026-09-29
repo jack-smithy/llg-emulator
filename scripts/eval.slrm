@@ -1,19 +1,28 @@
 #!/bin/bash
 #
-#SBATCH -J eval-large
+#SBATCH -J eval
 #SBATCH --time="1:00:00"
-#SBATCH --mem=8G
-#SBATCH -o logs/%x-%j.out
+#SBATCH --gres=gpu:1g.24gb:1
+#SBATCH --array=0-3
+#SBATCH -o logs/%x-%A_%a.out
 
+set -euo pipefail
 
-CONFIGURATION="test-factorized"
+DATASET="llg_field_switching"
+ARCH="fno"
+CONFIGURATION="test"
 
-pids=()
-for SEED in {0..3}; do
-    uv run eval.py --configuration "$CONFIGURATION" --seed "$SEED" &
-    pids+=($!)
-done
+echo "Job started on $(date)"
+echo "Running on node(s): $SLURM_NODELIST"
+echo "Array task (seed): $SLURM_ARRAY_TASK_ID"
+echo "Dataset: $DATASET"
+echo "Configuration: $ARCH $CONFIGURATION"
 
-for pid in "${pids[@]}"; do
-    wait "$pid" || echo "pid $pid failed with $?"
-done
+uv run python -c "import utils; utils.device_info()"
+
+# the model is rebuilt from results/$DATASET/$ARCH/$CONFIGURATION/seed_<seed>/metadata.json
+uv run eval.py \
+    --seed $SLURM_ARRAY_TASK_ID \
+    --arch $ARCH \
+    --configuration $CONFIGURATION \
+    --dataset $DATASET

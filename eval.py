@@ -1,29 +1,104 @@
 import json
+from argparse import ArgumentParser
 from pathlib import Path
 
+import equinox as eqx
+import jax
+import jax.random as jr
 import matplotlib.pyplot as plt
 import numpy as np
-from argparse import ArgumentParser
+import torch
+from the_well.benchmark.metrics import MSE, VRMSE
+from the_well.data import WellDataset
 
 from plot import animate_channels, plot_learning_curves, plot_norms, plot_rollout
-from utils import relative_norm_error
+from training import load_model
+from utils import (
+    conditioning,
+    numpy_collate,
+    one_step_preds,
+    relative_norm_error,
+    rollout,
+)
+
+jax.config.update("jax_compilation_cache_dir", ".jax_cache")
+
+IN_FRAMES = 1  # the model is a one-step map m_t -> m_{t+1}
+OUT_FRAMES = 1
+NUM_WORKERS = 1
+N_FRAMES_ROLLOUT = 100
+ROLLOUT_IDX = 7
 
 
-def main(seed, configuration, dataset):
-    base_path = Path("results")
-    results_path = base_path / dataset / configuration / f"seed_{seed}"
+def main(seed, configuration, dataset, arch):
+    path = f"datasets/{dataset}"
+    results_path = Path("results") / dataset / arch / configuration / f"seed_{seed}"
 
     with open(results_path / "stats.json", "r") as f:
         stats = json.load(f)
 
+    # rebuilt from model.eqx + metadata.json alone; the key only seeds the
+    # skeleton whose weights are then overwritten
+    model = load_model(results_path, key=jr.PRNGKey(seed), tag="model")
+    model = eqx.nn.inference_mode(model)
+    print("model loaded")
+
+    ### validation
+    val_dataset = WellDataset(
+        path=path,
+        well_split_name="valid",
+        n_steps_input=IN_FRAMES,
+        n_steps_output=OUT_FRAMES,
+        use_normalization=False,
+    )
+    loader = torch.utils.data.DataLoader(
+        dataset=val_dataset,
+        shuffle=False,
+        batch_size=stats["config"]["batch_size"],
+        num_workers=NUM_WORKERS,
+        collate_fn=numpy_collate,
+    )
+    pred, truth = one_step_preds(model, loader)
+    stats["metrics"] = {
+        "mse": MSE()(pred, truth, val_dataset.metadata).mean().item(),
+        "vrmse": VRMSE()(pred, truth, val_dataset.metadata).mean().item(),
+    }
+    with open(results_path / "stats.json", "w") as f:
+        json.dump(stats, f)
+    print(f"one-step metrics: {stats['metrics']}")
+
+    ### test on sp4
+    rollout_dataset = WellDataset(
+        path=path,
+        well_split_name="valid",
+        n_steps_input=N_FRAMES_ROLLOUT,
+        n_steps_output=OUT_FRAMES,
+        use_normalization=False,
+    )
+
+    sample = numpy_collate([rollout_dataset[ROLLOUT_IDX]])
+    truth = sample["input_fields"]  # (1, N_FRAMES_ROLLOUT, Lx, Ly, F)
+    cond = conditioning(sample["constant_scalars"])
+    pred = rollout(
+        model,
+        truth[:, :IN_FRAMES],
+        cond,
+        sample["space_grid"],
+        n_steps=truth.shape[1] - IN_FRAMES,
+    )
+    truth = truth[:, IN_FRAMES:]
+
+    ref, pred = truth[0], np.asarray(pred[0])
+    np.save(results_path / "rollout.npy", np.stack([ref, pred]))
+    print("saved rollout")
+
+    ### plots
     fig, _ = plot_learning_curves(stats=stats)
     fig.savefig(results_path / "learning_curve.png")
     plt.close()
     print("plotted learning curve")
 
-    ref, pred = np.load(results_path / "rollout.npy")
     ref_bulk, pred_bulk = np.mean(ref, axis=(1, 2)), np.mean(pred, axis=(1, 2))
-
     fig, _ = plot_rollout(ref_bulk=ref_bulk, pred_bulk=pred_bulk)
     fig.savefig(results_path / "rollout.png")
     plt.close()
@@ -53,5 +128,11 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--configuration", type=str, required=True)
     parser.add_argument("--dataset", type=str, required=True)
+    parser.add_argument("--arch", type=str, required=True)
     args = parser.parse_args()
-    main(seed=args.seed, configuration=args.configuration, dataset=args.dataset)
+    main(
+        seed=args.seed,
+        configuration=args.configuration,
+        dataset=args.dataset,
+        arch=args.arch,
+    )

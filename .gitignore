@@ -9,6 +9,7 @@ wheels/
 # Virtual environments
 .venv
 .jax_cache
+.nm_cache
 results
 
 data/

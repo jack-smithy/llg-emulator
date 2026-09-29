@@ -76,3 +76,17 @@ def animate_channels(arr, interval=100, cmap="RdBu_r"):
         return ims
 
     return FuncAnimation(fig, update, frames=T, interval=interval, blit=False)
+
+
+def plot_rollout_mse(curves):
+    """`curves`: {label: (T,) rollout MSE per step}, one line per geometry."""
+    fig, ax = plt.subplots(figsize=(5, 3))
+    for label, mse in curves.items():
+        ax.semilogy(np.arange(1, mse.shape[0] + 1), mse, label=label)
+    ax.set_xlabel("t")
+    ax.set_ylabel("rollout MSE")
+    ax.grid(alpha=0.5)
+    ax.set_xlim(left=1, right=mse.shape[0])
+    ax.legend(frameon=False, fontsize=7)
+    fig.tight_layout()
+    return fig, ax

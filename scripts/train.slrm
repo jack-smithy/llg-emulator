@@ -1,40 +1,52 @@
 #!/bin/bash
 #
 #SBATCH -J train
-#SBATCH --time="4:00:00"
+#SBATCH --time="1:00:00"
 #SBATCH --gres=gpu:1g.24gb:1
 #SBATCH -o logs/%x-%A.out
 
 
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
+
 set -euo pipefail
 
-CONFIGURATION="baseline-3"
 DATASET="llg_field_switching"
-IN_FRAMES=4
-LEARNING_RATE=1e-3
-BATCH_SIZE=16
-EPOCHS=8
-SEED=1
+ARCH="fno"
+CONFIGURATION="test"
+LEARNING_RATE=1e-4
+BATCH_SIZE=32
+EPOCHS=1
+HIDDEN_CHANNELS=64
+NUM_MODES=32
+NUM_BLOCKS=4
+SEED=2
 
 echo "Job started on $(date)"
 echo "Running on node(s): $SLURM_NODELIST"
 
 echo "Dataset: $DATASET"
-echo "Training configuration: $CONFIGURATION"
-echo "Learning rate=$LEARNING_RATE, Batch size=$BATCH_SIZE, In frames=$IN_FRAMES"
+echo "Training configuration: $ARCH $CONFIGURATION"
+echo "Learning rate=$LEARNING_RATE, Batch size=$BATCH_SIZE, Epochs=$EPOCHS"
+echo "Model: hidden channels=$HIDDEN_CHANNELS, modes=$NUM_MODES, blocks=$NUM_BLOCKS"
 
 uv run python -c "import utils; utils.device_info()"
 
-uv run train.py \
+uv run main.py \
     --seed $SEED \
     --configuration $CONFIGURATION \
+    --arch $ARCH \
     --dataset $DATASET \
-    --in-frames $IN_FRAMES \
     --learning-rate $LEARNING_RATE \
     --batch-size $BATCH_SIZE \
-    --epochs $EPOCHS
+    --epochs $EPOCHS \
+    --hidden-channels $HIDDEN_CHANNELS \
+    --num-modes $NUM_MODES \
+    --num-blocks $NUM_BLOCKS
+
+echo "Model Finished Training"
 
 uv run eval.py \
     --seed $SEED \
     --dataset $DATASET \
+    --arch $ARCH \
     --configuration $CONFIGURATION
