@@ -25,8 +25,10 @@ parser.add_argument("--dataset", type=str, required=True)
 parser.add_argument("--learning-rate", type=float, default=5e-3)
 parser.add_argument("--batch-size", type=int, default=16)
 parser.add_argument("--epochs", type=int, default=5)
-parser.add_argument("--hidden-channels", type=int, default=64)
-parser.add_argument("--num-blocks", type=int, default=4)
+parser.add_argument("--hidden-channels", type=int, default=160)
+parser.add_argument("--num-blocks", type=int, default=1)
+parser.add_argument("--num-levels", type=int, default=3)
+parser.add_argument("--num-heads", type=int, default=40)
 args = parser.parse_args()
 
 path = f"datasets/{args.dataset}"
@@ -37,10 +39,12 @@ torch.manual_seed(args.seed)
 generator = torch.Generator().manual_seed(args.seed)
 key = jr.PRNGKey(args.seed)
 
+device = jax.devices()[0]
+
 IN_FRAMES = 1  # the model is a one-step map m_t -> m_{t+1}
 OUT_FRAMES = 1
 BATCH_SIZE = args.batch_size
-NUM_WORKERS = 1
+NUM_WORKERS = 4
 EPOCHS = args.epochs
 LEARNING_RATE = args.learning_rate
 
@@ -85,8 +89,9 @@ train_loader = torch.utils.data.DataLoader(
     num_workers=NUM_WORKERS,
     generator=generator,
     drop_last=True,
-    pin_memory=True,
+    pin_memory=False,
     collate_fn=numpy_collate,
+    persistent_workers=True,
 )
 
 val_loader = torch.utils.data.DataLoader(
@@ -96,14 +101,18 @@ val_loader = torch.utils.data.DataLoader(
     num_workers=NUM_WORKERS,
     generator=generator,
     drop_last=True,
-    pin_memory=True,
+    pin_memory=False,
     collate_fn=numpy_collate,
+    persistent_workers=True,
 )
 
 model_config = ModelConfig(
     hidden_channels=args.hidden_channels,
     num_blocks=args.num_blocks,
+    num_levels=args.num_levels,
+    num_heads=args.num_heads,
 )
+
 key, model_key = jr.split(key)
 model = build_model(model_config, model_key)
 print(f"{pdeqx.count_parameters(model)} trainable parameters")
@@ -138,7 +147,6 @@ for epoch in range(EPOCHS):
 
 
 model = eqx.nn.inference_mode(model)
-# model.eqx + metadata.json: eval.py rebuilds the model from these alone
 save_model(model, model_config, results_path, tag="model")
 
 with open(f"{results_path}/stats.json", "w") as f:

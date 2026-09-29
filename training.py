@@ -28,11 +28,15 @@ def build_model(config: ModelConfig, key) -> eqx.Module:
         out_channels=3,
         hidden_channels=config.hidden_channels,
         num_blocks=config.num_blocks,
+        num_levels=config.num_levels,
+        num_heads=config.num_heads,
         activation=config.activation,
         boundary_mode="neumann",  # finite thin film, not periodic
         key=key,
     )
-    return ResidualEmulator(network=network)
+    model = ResidualEmulator(network=network)
+
+    return model
 
 
 @eqx.filter_jit
@@ -52,7 +56,12 @@ def save_model(model: eqx.Module, config: ModelConfig, path: Path, tag: str):
     """Serialise the weights to `<path>/<tag>.eqx` + `metadata.json`."""
     path.mkdir(parents=True, exist_ok=True)
     eqx.tree_serialise_leaves(path / f"{tag}.eqx", model)
-    meta = {"hidden_channels": config.hidden_channels, "num_blocks": config.num_blocks}
+    meta = {
+        "hidden_channels": config.hidden_channels,
+        "num_blocks": config.num_blocks,
+        "num_levels": config.num_levels,
+        "num_heads": config.num_heads,
+    }
     # rewrite every time: a stale sidecar builds the wrong skeleton on load
     (path / "metadata.json").write_text(json.dumps(meta))
 
@@ -62,6 +71,9 @@ def load_model(path: Path, key, tag: str) -> eqx.Module:
     the skeleton whose weights are then overwritten."""
     meta = json.loads((path / "metadata.json").read_text())
     config = ModelConfig(
-        hidden_channels=meta["hidden_channels"], num_blocks=meta["num_blocks"]
+        hidden_channels=meta["hidden_channels"],
+        num_blocks=meta["num_blocks"],
+        num_heads=meta["num_heads"],
+        num_levels=meta["num_levels"],
     )
     return eqx.tree_deserialise_leaves(path / f"{tag}.eqx", build_model(config, key))

@@ -43,7 +43,9 @@ def prepare_batch(batch):
     """
     m0 = rearrange(batch["input_fields"], "B 1 Lx Ly F -> B F Lx Ly")
     m1 = rearrange(batch["output_fields"], "B 1 Lx Ly F -> B F Lx Ly")
-    return m0, m1, conditioning(batch["constant_scalars"])
+    c = conditioning(batch["constant_scalars"])
+
+    return m0, m1, c
 
 
 @eqx.filter_jit

@@ -4,24 +4,27 @@
 #SBATCH --time="3:00:00"
 #SBATCH --gres=gpu:1g.24gb:1
 #SBATCH --mem=16G
+#SBATCH --array=0-3
 #SBATCH -o logs/%x-%j.out
+
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 
 set -euo pipefail
 
-CONFIGURATION="resnet-constant-embedding"
+CONFIGURATION="flowers-full"
 DATASET="llg_field_switching"
 SEED=2
 
 echo "Job started on $(date)"
 echo "Running on node(s): $SLURM_NODELIST"
 echo "Dataset: $DATASET"
-echo "Configuration: $CONFIGURATION, seed $SEED"
+echo "Configuration: $CONFIGURATION, seed $SLURM_ARRAY_TASK_ID"
 
 uv run python -c "import utils; utils.device_info()"
 
 # the model is rebuilt from results/$DATASET/$CONFIGURATION/seed_$SEED/metadata.json;
 # extra sbatch arguments pass through, e.g. `sbatch scripts/eval_geometries.slrm --geometries sq64 sp4`
 uv run eval_geometries.py \
-    --seed $SEED \
+    --seed $SLURM_ARRAY_TASK_ID \
     --configuration $CONFIGURATION \
     --dataset $DATASET "$@"

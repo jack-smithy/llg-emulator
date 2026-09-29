@@ -4,6 +4,9 @@ check:
 gpu:
 	srun --jobid=$(JOBID) --pty nvitop
 
+cpu:
+	srun --jobid=$(JOBID) --pty htop
+
 clear-logs:
 	rm -rf logs/*.out
 
