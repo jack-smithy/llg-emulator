@@ -22,7 +22,7 @@ echo "Configuration: $CONFIGURATION"
 
 uv run python -c "import utils; utils.device_info()"
 
-# the model is rebuilt from results/$DATASET/$CONFIGURATION/seed_<seed>/metadata.json;
+# the model is rebuilt from results-v2/$DATASET/$CONFIGURATION/seed_<seed>/metadata.json;
 # extra sbatch arguments pass through, e.g. `sbatch scripts/eval_geometries.slrm --geometries sq64 sp4`
 uv run python -m datagen.eval_geometries \
     --seed $SLURM_ARRAY_TASK_ID \

@@ -14,7 +14,8 @@ DATASET="llg_field_switching"
 CONFIGURATION="full-3"
 LEARNING_RATE=1e-3
 BATCH_SIZE=128
-EPOCHS=32
+NUM_STEPS=10000
+VAL_EVERY=1000
 HIDDEN_CHANNELS=64
 NUM_BLOCKS=2
 POOL_FACTORS="1 2 4"  # integer cell-size multiples, one drawn per batch
@@ -25,7 +26,7 @@ echo "Running on node(s): $SLURM_NODELIST"
 
 echo "Dataset: $DATASET"
 echo "Training configuration: $CONFIGURATION"
-echo "Learning rate=$LEARNING_RATE, Batch size=$BATCH_SIZE, Epochs=$EPOCHS"
+echo "Learning rate=$LEARNING_RATE, Batch size=$BATCH_SIZE, Steps=$NUM_STEPS, val every $VAL_EVERY"
 echo "Model: hidden channels=$HIDDEN_CHANNELS, blocks=$NUM_BLOCKS, pool factors=$POOL_FACTORS"
 
 uv run python -c "import utils; utils.device_info()"
@@ -36,7 +37,8 @@ uv run main.py \
     --dataset $DATASET \
     --learning-rate $LEARNING_RATE \
     --batch-size $BATCH_SIZE \
-    --epochs $EPOCHS \
+    --num-steps $NUM_STEPS \
+    --val-every $VAL_EVERY \
     --hidden-channels $HIDDEN_CHANNELS \
     --num-blocks $NUM_BLOCKS \
     --pool-factors $POOL_FACTORS

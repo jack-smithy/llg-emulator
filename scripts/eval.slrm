@@ -19,7 +19,7 @@ echo "Configuration: $CONFIGURATION"
 
 uv run python -c "import utils; utils.device_info()"
 
-# the model is rebuilt from results/$DATASET/$CONFIGURATION/seed_<seed>/metadata.json
+# the model is rebuilt from results-v2/$DATASET/$CONFIGURATION/seed_<seed>/metadata.json
 uv run eval.py \
     --seed $SLURM_ARRAY_TASK_ID \
     --configuration $CONFIGURATION \

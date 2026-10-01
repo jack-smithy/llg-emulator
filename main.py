@@ -1,4 +1,5 @@
 import json
+from itertools import islice
 from argparse import ArgumentParser
 from pathlib import Path
 
@@ -24,7 +25,10 @@ parser.add_argument("--configuration", type=str, required=True)
 parser.add_argument("--dataset", type=str, required=True)
 parser.add_argument("--learning-rate", type=float, default=5e-3)
 parser.add_argument("--batch-size", type=int, default=16)
-parser.add_argument("--epochs", type=int, default=5)
+# gradient steps, not epochs: the loader cycles, every batch drawing its own pool factor
+parser.add_argument("--num-steps", type=int, default=10_000)
+# validate (and record the mean train loss of the window since) every this many steps
+parser.add_argument("--val-every", type=int, default=1_000)
 parser.add_argument("--hidden-channels", type=int, default=64)
 parser.add_argument("--num-blocks", type=int, default=2)
 # each batch is coarse-grained by one of these integer factors (utils.downsample)
@@ -47,13 +51,14 @@ IN_FRAMES = 1  # the model is a one-step map m_t -> m_{t+1}
 OUT_FRAMES = 1
 BATCH_SIZE = args.batch_size
 NUM_WORKERS = 4
-EPOCHS = args.epochs
+NUM_STEPS = args.num_steps
 LEARNING_RATE = args.learning_rate
 
 stats = {}
 stats["config"] = {
     "batch_size": BATCH_SIZE,
-    "epochs": EPOCHS,
+    "num_steps": NUM_STEPS,
+    "val_every": args.val_every,
     "learning_rate": LEARNING_RATE,
     "in_context_n": IN_FRAMES,
     "hidden_channels": args.hidden_channels,
@@ -120,33 +125,58 @@ print(f"{pdeqx.count_parameters(model)} trainable parameters")
 
 optimizer = optax.chain(
     optax.clip_by_global_norm(1.0),
-    optax.adamw(learning_rate=LEARNING_RATE, weight_decay=1e-5),
+    # cosine decay to zero over the whole run, one schedule step per batch
+    optax.adamw(
+        learning_rate=optax.cosine_decay_schedule(LEARNING_RATE, decay_steps=NUM_STEPS),
+        weight_decay=1e-5,
+    ),
 )
 opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
 
+# step of each entry; train_history[i] is the mean train loss over the window ending there
+stats["steps"] = []
 stats["train_history"] = []
 stats["val_history"] = []
 
-for epoch in range(EPOCHS):
-    losses = []
-    for batch in tqdm(train_loader, mininterval=10):
-        batch = prepare_batch(batch, int(rng.choice(args.pool_factors)))
-        model, opt_state, loss = update_fn(model, batch, optimizer, opt_state)
-        losses.append(loss)
-    stats["train_history"].append(float(jnp.stack(losses).mean()))
 
-    inference_model = eqx.nn.inference_mode(model)
-    losses = []
-    # the factors in turn, so every epoch validates on the same batches
-    for i, batch in enumerate(tqdm(val_loader, mininterval=10)):
-        pool = args.pool_factors[i % len(args.pool_factors)]
-        batch = prepare_batch(batch, pool)
-        loss = loss_fn(inference_model, *batch)
-        losses.append(loss)
-    val_loss = float(jnp.stack(losses).mean())
-    stats["val_history"].append(val_loss)
+def cycle(loader):
+    """Iterate a DataLoader forever; every pass reshuffles."""
+    while True:
+        yield from loader
 
-    print(f"\n=== epoch {epoch + 1} / {EPOCHS}. loss={val_loss:.4f} ===")
+
+def validate(model):
+    losses = []
+    # the factors in turn, so every validation scores the same batches
+    for i, batch in enumerate(val_loader):
+        batch = prepare_batch(batch, args.pool_factors[i % len(args.pool_factors)])
+        losses.append(loss_fn(model, *batch))
+    return float(jnp.stack(losses).mean())
+
+
+losses = []  # device scalars, synced once per window
+batches = islice(cycle(train_loader), NUM_STEPS)
+for step, batch in enumerate(tqdm(batches, total=NUM_STEPS, mininterval=10), 1):
+    batch = prepare_batch(batch, int(rng.choice(args.pool_factors)))
+    model, opt_state, loss = update_fn(model, batch, optimizer, opt_state)
+    losses.append(loss)
+    if step % args.val_every == 0 or step == NUM_STEPS:
+        stats["steps"].append(step)
+        stats["train_history"].append(float(jnp.stack(losses).mean()))
+        inference_model = eqx.nn.inference_mode(model)
+        stats["val_history"].append(validate(inference_model))
+        # load with load_model(results_path / "checkpoints", key, f"step_{step}")
+        save_model(
+            inference_model, model_config, results_path / "checkpoints", f"step_{step}"
+        )
+        losses = []
+        print(
+            f"\n=== step {step} / {NUM_STEPS}: train {stats['train_history'][-1]:.3e}, "
+            f"val {stats['val_history'][-1]:.3e} ===",
+            flush=True,
+        )
+        with open(f"{results_path}/stats.json", "w") as f:
+            json.dump(stats, f)
 
 
 model = eqx.nn.inference_mode(model)

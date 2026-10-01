@@ -32,7 +32,7 @@ uv run main.py --seed 0 --configuration test --dataset llg_field_switching
 uv run eval.py --seed 0 --configuration test --dataset llg_field_switching
 ```
 
-Weights, metrics and plots land in `results/<dataset>/<configuration>/seed_<seed>/`.
+Weights, metrics and plots land in `results-v2/<dataset>/<configuration>/seed_<seed>/`.
 
 ## Data generation
 
@@ -51,4 +51,15 @@ modules, so run them from the repo root as modules:
 uv run python -m datagen.generate_varied_field --out datasets/<name> --n-train 64
 uv run python -m datagen.generate_geometries --out datasets/llg_field_switching --geometry sq512
 uv run python -m datagen.eval_geometries --seed 0 --configuration test --dataset llg_field_switching
+```
+
+`datagen/eval_scaling.py` measures rollout accuracy and cost across cell and film sizes
+against magnum.np run directly on the coarse mesh, in stages sharing a cache under
+`results-v2/<dataset>/scaling/` (`truth` first, as a CPU job since it reads the 31 GB
+6144^2 film; `report` last; the GPU stages via `scripts/eval_scaling.slrm`):
+
+```sh
+sbatch -t 2:00:00 -c 4 --mem=24G --wrap "uv run python -m datagen.eval_scaling truth"
+sbatch scripts/eval_scaling.slrm   # STAGE=baseline, speed, model or demo
+uv run python -m datagen.eval_scaling report --runs <configuration>/seed_<s> ...
 ```

@@ -6,7 +6,8 @@ from matplotlib.animation import FuncAnimation
 def plot_learning_curves(stats):
     train_history = stats["train_history"]
     val_history = stats["val_history"]
-    steps = np.arange(1, len(train_history) + 1)
+    # step-based runs record each entry's step; older epoch-based ones did not
+    steps = stats.get("steps") or np.arange(1, len(train_history) + 1)
 
     fig, ax = plt.subplots(figsize=(5, 3), sharey=True)
     ax.semilogy(steps, train_history, label="train")

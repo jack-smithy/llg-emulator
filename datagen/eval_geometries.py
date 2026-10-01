@@ -21,7 +21,7 @@ seeds and so the same applied fields: the in-distribution reference. Per geometr
 - a free rollout over the whole trajectory from frame 0 for every sample, reduced to
   the per-step MSE and the bulk magnetisation <m>(t) of prediction and reference.
 
-Written to `results/<dataset>/<configuration>/seed_<seed>/geometries/`:
+Written to `results-v2/<dataset>/<configuration>/seed_<seed>/geometries/`:
 
     metrics.json          per geometry: cells, one-step mse/vrmse, rollout mse per step
                           (mean over samples and at the last step), bulk <m>(t) per
@@ -159,7 +159,7 @@ def rollouts(model, root, filters):
 
 def main(seed, configuration, dataset, batch_size, geometries):
     data_root = Path("datasets") / dataset
-    results_path = Path("results") / dataset / configuration / f"seed_{seed}"
+    results_path = Path("results-v2") / dataset / configuration / f"seed_{seed}"
     out = results_path / "geometries"
     out.mkdir(exist_ok=True)
 
