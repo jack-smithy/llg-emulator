@@ -1,0 +1,28 @@
+#!/bin/bash
+#
+#SBATCH -J eval-scaling
+#SBATCH --time="4:00:00"
+#SBATCH --gres=gpu:1g.24gb:1
+#SBATCH --mem=16G
+#SBATCH -o logs/%x-%j.out
+
+set -euo pipefail
+
+DATASET="llg_field_switching"
+GROUP="claude-experiments"  # runs live in results/$DATASET/$GROUP/...; "" = results/$DATASET/...
+STAGE="model"  # baseline (magnum.np at each coarse cell) | solver (neuralmag coarse step alone) | model (emulator rollouts)
+# the runs to evaluate, <arch>/<configuration>/seed_<s> under results/$DATASET/$GROUP
+RUNS="dilated/scale-A-coords/seed_0 dilated/scale-A-coords/seed_1 dilated/scale-B-edge/seed_0 dilated/scale-B-edge/seed_1"
+
+echo "Job started on $(date)"
+echo "Running on node(s): $SLURM_NODELIST"
+echo "Stage: $STAGE"
+
+# the CPU `truth` stage must have run first; `report` needs no GPU:
+#   uv run python -m datagen.eval_scaling truth
+#   uv run python -m datagen.eval_scaling report --runs $RUNS
+# extra sbatch arguments pass through, e.g. `sbatch scripts/eval_scaling.slrm --films large`
+uv run python -m datagen.eval_scaling $STAGE \
+    --group "$GROUP" \
+    --dataset $DATASET \
+    --runs $RUNS "$@"

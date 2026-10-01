@@ -5,12 +5,14 @@ from matplotlib.animation import FuncAnimation
 
 def plot_learning_curves(stats):
     train_history = stats["train_history"]
-    val_history = stats["val_history"]
+    # step-based training records no validation curve
+    val_history = stats.get("val_history", [])
     steps = np.arange(1, len(train_history) + 1)
 
     fig, ax = plt.subplots(figsize=(5, 3), sharey=True)
     ax.semilogy(steps, train_history, label="train")
-    ax.semilogy(steps, val_history, label="val")
+    if val_history:
+        ax.semilogy(steps, val_history, label="val")
     ax.grid(True, alpha=0.5)
     ax.set_xlabel("step")
     ax.set_ylabel("loss")

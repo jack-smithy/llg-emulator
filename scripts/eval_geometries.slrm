@@ -1,23 +1,26 @@
 #!/bin/bash
 #
 #SBATCH -J eval-geom
+# first run on a mesh builds its neuralmag demag tensor (cached in .nm_cache)
 #SBATCH --time="3:00:00"
 #SBATCH --gres=gpu:1g.24gb:1
 #SBATCH --mem=16G
-#SBATCH --array=0-3
-#SBATCH -o logs/%x-%A_%a.out
+
+#SBATCH -o logs/%x-%A.out
 
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 
 set -euo pipefail
 
 DATASET="llg_field_switching"
-ARCH="fno"
-CONFIGURATION="test"
+GROUP="claude-experiments"  # runs live in results/$DATASET/$GROUP/...; "" = results/$DATASET/...
+ARCH="dilated"
+CONFIGURATION="seed-parallel-large-batch"
+SEED=3
+POOL_FACTORS="1 2 4"  # each geometry is evaluated at every one of these
 
 echo "Job started on $(date)"
 echo "Running on node(s): $SLURM_NODELIST"
-echo "Array task (seed): $SLURM_ARRAY_TASK_ID"
 echo "Dataset: $DATASET"
 echo "Configuration: $ARCH $CONFIGURATION"
 
@@ -26,7 +29,9 @@ uv run python -c "import utils; utils.device_info()"
 # the model is rebuilt from results/$DATASET/$ARCH/$CONFIGURATION/seed_<seed>/metadata.json;
 # extra sbatch arguments pass through, e.g. `sbatch scripts/eval_geometries.slrm --geometries sq64 sp4`
 uv run python -m datagen.eval_geometries \
-    --seed $SLURM_ARRAY_TASK_ID \
+    --group "$GROUP" \
+    --seed $SEED \
     --arch $ARCH \
     --configuration $CONFIGURATION \
-    --dataset $DATASET "$@"
+    --dataset $DATASET \
+    --pool-factors $POOL_FACTORS "$@"

@@ -134,7 +134,7 @@ class DemagField(eqx.Module):
         return jnp.moveaxis(h, -1, 0)  # (3, h, w)
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=64)
 def demag_cache(
     n: tuple, dx: tuple, Ms: float = 1.0, p: int = 20, *, nodal: bool = False
 ) -> DemagField:
@@ -149,3 +149,83 @@ def demag_cache(
     Args must be hashable (tuples, not lists) — `lru_cache` keys on them.
     """
     return DemagField(n, dx, Ms=Ms, p=p, nodal=nodal)
+
+
+class CoarseLLG(eqx.Module):
+    """One frame of LLG micromagnetics on the data's (coarse) cell grid, computed by
+    neuralmag: its own exchange, demag and Zeeman field terms and LLG right-hand
+    side (`state.resolve`), integrated with diffrax Dopri5 at the tolerances
+    neuralmag's `LLGSolverJAX` uses. Unlike `LLGSolver.step`, which advances
+    `state.m` in place, this is a pure function of (m, h), so the emulator can vmap
+    it over a batch and differentiate through it.
+
+    neuralmag discretises m on the nodes of its mesh. The nodes are placed at the
+    data's cell centres (a nodal mesh one cell smaller per axis), so the
+    cell-centred data maps onto it without interpolation; the price is a magnetic
+    body that ends half a cell inside the film's edge, one reason this is less
+    accurate on coarse meshes than magnum.np's cell-based finite differences.
+
+    Call: m (3, nx, ny) unit vectors, h_ext (3,) = H / Ms -> m after `dt`.
+    """
+
+    step: Callable = eqx.field(static=True)
+    Ms: float = eqx.field(static=True)
+
+    def __init__(self, n, dx, Ms, A, alpha, dt, scale_t=1e-9, rtol=1e-5, atol=1e-5):
+        import diffrax as dfx
+        from neuralmag.backends.jax.tensor_operations import xp_runtime
+        from neuralmag.common.llg import llg_rhs
+
+        mesh = nm.Mesh(
+            (n[0] - 1, n[1] - 1), tuple(dx), (dx[0] / 2, dx[1] / 2, 0.0)
+        )  # nodes at the cell centres
+        state = nm.State(mesh)
+        state.material.Ms = Ms
+        state.material.A = A
+        state.material.alpha = alpha
+        state.m = nm.VectorFunction(state).fill((1.0, 0.0, 0.0))
+        state.h_applied = state.tensor([0.0, 0.0, 0.0])
+        nm.ExchangeField().register(state, "exchange")
+        nm.DemagField(cache_dir=NM_CACHE).register(state, "demag")
+        nm.ExternalField(lambda h_applied: h_applied).register(state, "external")
+        nm.TotalField("exchange", "demag", "external").register(state)
+        rhs = state.resolve(
+            lambda h, m, material__alpha: llg_rhs(xp_runtime, h, m, material__alpha),
+            ["m", "h_applied"],
+        )
+        term = dfx.ODETerm(lambda t, m, h: scale_t * rhs(m, h))
+        controller = dfx.PIDController(rtol=rtol, atol=atol)
+
+        def step(m, h):  # m (nx, ny, 3) on the nodes, h (3,) in A/m
+            sol = dfx.diffeqsolve(
+                term,
+                dfx.Dopri5(),
+                t0=0.0,
+                t1=dt / scale_t,
+                dt0=1e-14 / scale_t,
+                y0=m,
+                args=h,
+                stepsize_controller=controller,
+                saveat=dfx.SaveAt(t1=True),
+                max_steps=4096,
+            )
+            m = sol.ys[-1]
+            return m / jnp.linalg.norm(m, axis=-1, keepdims=True)
+
+        self.step = step
+        self.Ms = float(Ms)
+
+    def __call__(self, m, h_ext):
+        m = self.step(jnp.moveaxis(m, 0, -1), h_ext * self.Ms)
+        return jnp.moveaxis(m, -1, 0)
+
+
+@lru_cache(maxsize=64)
+def llg_cache(n: tuple, dx: tuple, alpha: float | None = None) -> CoarseLLG:
+    """`CoarseLLG` for one mesh of the dataset's permalloy, one frame (10 ps) per
+    call, built at most once per process like `demag_cache`; `alpha` overrides the
+    damping (1.0 for a relaxation)."""
+    from datagen.generate_varied_field import DT, MATERIAL
+
+    a = MATERIAL["alpha"] if alpha is None else alpha
+    return CoarseLLG(n, dx, MATERIAL["Ms"], MATERIAL["A"], a, DT)

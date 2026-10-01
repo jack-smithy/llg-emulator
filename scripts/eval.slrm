@@ -9,8 +9,10 @@
 set -euo pipefail
 
 DATASET="llg_field_switching"
+GROUP="claude-experiments"  # runs live in results/$DATASET/$GROUP/...; "" = results/$DATASET/...
 ARCH="fno"
 CONFIGURATION="test"
+POOL_FACTOR=1  # the cell-size factor to evaluate at (match the training factors)
 
 echo "Job started on $(date)"
 echo "Running on node(s): $SLURM_NODELIST"
@@ -22,7 +24,9 @@ uv run python -c "import utils; utils.device_info()"
 
 # the model is rebuilt from results/$DATASET/$ARCH/$CONFIGURATION/seed_<seed>/metadata.json
 uv run eval.py \
+    --group "$GROUP" \
     --seed $SLURM_ARRAY_TASK_ID \
     --arch $ARCH \
     --configuration $CONFIGURATION \
-    --dataset $DATASET
+    --dataset $DATASET \
+    --pool-factor $POOL_FACTOR

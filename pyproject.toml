@@ -10,6 +10,7 @@ dependencies = [
     "jax[cuda13]>=0.11.2",
     "magnumnp>=2.2.0",
     "neuralmag[jax]>=1.0.0",
+    "opencv-python>=5.0.0.93",
     "optax>=0.2.8",
     "pdequinox",
     "pyyaml>=6.0.3",

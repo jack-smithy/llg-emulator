@@ -1,0 +1,28 @@
+#!/bin/bash
+#
+#SBATCH -J test
+#SBATCH --time="0:30:00"
+#SBATCH --gres=gpu:1g.24gb:1
+#SBATCH -o logs/%x-%j.out
+
+
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
+
+set -euo pipefail
+
+DATASET="llg_field_switching"
+ARCH="dilated"
+
+echo "Job started on $(date)"
+echo "Running on node(s): $SLURM_NODELIST"
+
+echo "Dataset: $DATASET"
+echo "Arch: $ARCH"
+
+uv run python -c "import utils; utils.device_info()"
+
+# one training batch + the eval in a self-deleting temp dir; extra sbatch
+# arguments pass through, e.g. `sbatch scripts/test.slrm --no-use-demag`
+uv run python test.py \
+    --arch $ARCH \
+    --dataset $DATASET "$@"

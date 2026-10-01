@@ -14,6 +14,9 @@ clear-logs:
 logs:
 	mkdir -p logs
 
+test: logs
+	sbatch scripts/test.slrm
+
 train: logs
 	sbatch scripts/train.slrm
 

@@ -1,52 +1,74 @@
 #!/bin/bash
 #
 #SBATCH -J train
-#SBATCH --time="4:00:00"
+#SBATCH --time="2:00:00"
 #SBATCH --gres=gpu:1g.24gb:1
 #SBATCH -o logs/%x-%j.out
-
 
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 
 set -euo pipefail
 
 DATASET="llg_field_switching"
-ARCH="fno"
-CONFIGURATION="full-3"
+GROUP="claude-experiments"  # runs live in results/$DATASET/$GROUP/...; "" = results/$DATASET/...
+ARCH="dilated"
+CONFIGURATION="pooled-mixed-with-coords"
 LEARNING_RATE=1e-3
-BATCH_SIZE=128
-EPOCHS=32
+BATCH_SIZE=64
+NUM_WORKERS=4
+NUM_STEPS=1000
 HIDDEN_CHANNELS=64
 NUM_MODES=32
-NUM_BLOCKS=4
+NUM_BLOCKS=2
 SEED=2
+USE_DEMAG="--use-demag"
+COORDS="absolute"  # geometry channels: absolute (um coordinates) | edge (bounded edge distances) | none
+CELL_SIZE_COND="--no-cell-size-cond"  # --cell-size-cond also conditions on log(delta / l_ex)
+USE_SOLVER="--no-use-solver"  # --use-solver learns a correction to micromagnetics on the coarse mesh
+USE_NORM="--use-norm"  # --no-use-norm drops GroupNorm: a strictly local network
+POOL_FACTORS="1 1.4 2 2.8 4 5.6"  # every batch draws one of these cell-size factors
+EVAL_POOL_FACTOR=1  # the factor eval.py scores after training
+UNROLL=1  # K-step unrolled training loss (utils.unrolled_loss_fn); > 1 is usually a fine-tune
+INIT_CONFIGURATION=""  # warm start from results/$DATASET/$GROUP/$ARCH/<this>/seed_<seed>; empty = from scratch
 
 echo "Job started on $(date)"
 echo "Running on node(s): $SLURM_NODELIST"
 
 echo "Dataset: $DATASET"
 echo "Training configuration: $ARCH $CONFIGURATION"
-echo "Learning rate=$LEARNING_RATE, Batch size=$BATCH_SIZE, Epochs=$EPOCHS"
+echo "Learning rate=$LEARNING_RATE, Batch size=$BATCH_SIZE, Steps=$NUM_STEPS"
 echo "Model: hidden channels=$HIDDEN_CHANNELS, modes=$NUM_MODES, blocks=$NUM_BLOCKS"
 
 uv run python -c "import utils; utils.device_info()"
 
 uv run main.py \
+    --group "$GROUP" \
     --seed $SEED \
     --configuration $CONFIGURATION \
     --arch $ARCH \
     --dataset $DATASET \
     --learning-rate $LEARNING_RATE \
     --batch-size $BATCH_SIZE \
-    --epochs $EPOCHS \
+    --num-workers $NUM_WORKERS \
+    --num-steps $NUM_STEPS \
     --hidden-channels $HIDDEN_CHANNELS \
     --num-modes $NUM_MODES \
-    --num-blocks $NUM_BLOCKS
+    --num-blocks $NUM_BLOCKS \
+    --pool-factors $POOL_FACTORS \
+    $USE_DEMAG \
+    --coords $COORDS \
+    --unroll $UNROLL \
+    ${INIT_CONFIGURATION:+--init-from results/$DATASET/$GROUP/$ARCH/$INIT_CONFIGURATION/seed_$SEED} \
+    $CELL_SIZE_COND \
+    $USE_SOLVER \
+    $USE_NORM
 
 echo "Model Finished Training"
 
 uv run eval.py \
+    --group "$GROUP" \
     --seed $SEED \
     --dataset $DATASET \
     --arch $ARCH \
-    --configuration $CONFIGURATION
+    --configuration $CONFIGURATION \
+    --pool-factor $EVAL_POOL_FACTOR
