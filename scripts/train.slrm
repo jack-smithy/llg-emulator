@@ -11,42 +11,39 @@ export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 set -euo pipefail
 
 DATASET="llg_field_switching"
-ARCH="fno"
 CONFIGURATION="full-3"
 LEARNING_RATE=1e-3
 BATCH_SIZE=128
 EPOCHS=32
 HIDDEN_CHANNELS=64
-NUM_MODES=32
-NUM_BLOCKS=4
+NUM_BLOCKS=2
+POOL_FACTORS="1 2 4"  # integer cell-size multiples, one drawn per batch
 SEED=2
 
 echo "Job started on $(date)"
 echo "Running on node(s): $SLURM_NODELIST"
 
 echo "Dataset: $DATASET"
-echo "Training configuration: $ARCH $CONFIGURATION"
+echo "Training configuration: $CONFIGURATION"
 echo "Learning rate=$LEARNING_RATE, Batch size=$BATCH_SIZE, Epochs=$EPOCHS"
-echo "Model: hidden channels=$HIDDEN_CHANNELS, modes=$NUM_MODES, blocks=$NUM_BLOCKS"
+echo "Model: hidden channels=$HIDDEN_CHANNELS, blocks=$NUM_BLOCKS, pool factors=$POOL_FACTORS"
 
 uv run python -c "import utils; utils.device_info()"
 
 uv run main.py \
     --seed $SEED \
     --configuration $CONFIGURATION \
-    --arch $ARCH \
     --dataset $DATASET \
     --learning-rate $LEARNING_RATE \
     --batch-size $BATCH_SIZE \
     --epochs $EPOCHS \
     --hidden-channels $HIDDEN_CHANNELS \
-    --num-modes $NUM_MODES \
-    --num-blocks $NUM_BLOCKS
+    --num-blocks $NUM_BLOCKS \
+    --pool-factors $POOL_FACTORS
 
 echo "Model Finished Training"
 
 uv run eval.py \
     --seed $SEED \
     --dataset $DATASET \
-    --arch $ARCH \
     --configuration $CONFIGURATION

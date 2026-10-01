@@ -3,7 +3,7 @@ import jax
 import jax.numpy as jnp
 import jax.tree_util as jtu
 import numpy as np
-from einops import rearrange
+from einops import rearrange, reduce
 from jaxtyping import PyTree
 from torch.utils.data import default_collate
 from tqdm import tqdm
@@ -11,6 +11,7 @@ from tqdm import tqdm
 # `batch["constant_scalars"]` in the order the generator writes them
 # (datagen.generate_varied_field.create_split); main.py checks the dataset agrees.
 SCALARS = ("Ms", "A", "alpha", "Hx", "Hy", "Hz")
+MU_0 = 4e-7 * np.pi
 
 
 def with_coords(m, grid):
@@ -33,31 +34,58 @@ def numpy_collate(batch):
     return jtu.tree_map(np.asarray, default_collate(batch))
 
 
-def conditioning(scalars):
-    """`constant_scalars` (B, 6) -> `cond` (B, 2): `[Hx, Hy] / Ms`.
+def conditioning(scalars, grid):
+    """`constant_scalars` (B, 6) + `space_grid` (B, Lx, Ly, 2) -> `cond` (B, 3):
+    `[Hx / Ms, Hy / Ms, log(delta / l_ex)]`.
 
-    Hz is always zero in the data and Ms is constant, so this is the whole
-    per-sample variation, nondimensionalised.
+    Hz is always zero in the data and Ms is constant, so the field components are
+    the whole per-sample variation, nondimensionalised. `delta / l_ex` is the cell
+    size over the exchange length `sqrt(2A / (mu0 Ms^2))` (~0.88 for the native
+    5 nm cells), the one length ratio of the discretised problem; a log because
+    it is a scale parameter.
     """
-    return scalars[:, 3:5] / scalars[:, :1]
+    h = scalars[:, 3:5] / scalars[:, :1]
+    delta = grid[:, 1, 0, 0] - grid[:, 0, 0, 0]  # x-spacing; in-plane cells are square
+    l_ex = jnp.sqrt(2 * scalars[:, 1] / (MU_0 * scalars[:, 0] ** 2))
+    return jnp.concatenate([h, jnp.log(delta / l_ex)[:, None]], axis=1)
 
 
-def prepare_batch(batch):
-    """One-step batch -> `(m0, m1, cond)` in the model's layout.
+def downsample(m, grid, factor: int):
+    """Coarse-grain m and grid onto the same film with `factor`-times larger cells.
+
+    m: (B, 3, Lx, Ly) unit vectors; grid: (B, Lx, Ly, 2) cell centres in metres;
+    Lx and Ly must be multiples of `factor`. Each coarse cell's m is the mean of
+    its `factor` x `factor` block, renormalised back onto the unit sphere (lossy
+    near domain walls, which is inherent to a larger cell); its centre is the
+    block's mean centre.
+    returns: (m, grid) on the coarse mesh.
+    """
+    if factor == 1:
+        return m, grid
+    m = reduce(m, "B F (x i) (y j) -> B F x y", "mean", i=factor, j=factor)
+    grid = reduce(grid, "B (x i) (y j) D -> B x y D", "mean", i=factor, j=factor)
+    return m / jnp.linalg.norm(m, axis=1, keepdims=True), grid
+
+
+def prepare_batch(batch, pool: int = 1):
+    """One-step batch -> `(m0, m1, cond)` in the model's layout, coarse-grained by
+    `pool` first.
 
     m0: (B, 5, Lx, Ly), the frame with the cell grid appended; m1: (B, 3, Lx, Ly);
-    cond: (B, 2).
+    cond: (B, 3).
     """
     m0 = rearrange(batch["input_fields"], "B 1 Lx Ly F -> B F Lx Ly")
     m1 = rearrange(batch["output_fields"], "B 1 Lx Ly F -> B F Lx Ly")
-    c = conditioning(batch["constant_scalars"])
+    m0, grid = downsample(m0, batch["space_grid"], pool)
+    m1, _ = downsample(m1, batch["space_grid"], pool)
+    c = conditioning(batch["constant_scalars"], grid)
 
-    return with_coords(m0, batch["space_grid"]), m1, c
+    return with_coords(m0, grid), m1, c
 
 
 @eqx.filter_jit
 def predict(model, m0, cond):
-    """One step for a batch: (B, 5, Lx, Ly), (B, 2) -> (B, 3, Lx, Ly)."""
+    """One step for a batch: (B, 5, Lx, Ly), (B, 3) -> (B, 3, Lx, Ly)."""
     return jax.vmap(model)(m0, cond)
 
 
@@ -66,7 +94,7 @@ def rollout(model, x, cond, grid, n_steps: int):
     """Autoregressively predict n_steps frames from one frame.
 
     x: (B, 1, Lx, Ly, F), as WellDataset serves input_fields.
-    cond: (B, 2), as `conditioning` returns it.
+    cond: (B, 3), as `conditioning` returns it.
     grid: (B, Lx, Ly, 2), as WellDataset serves space_grid.
     returns: (B, n_steps, Lx, Ly, F), same layout as output_fields.
     """

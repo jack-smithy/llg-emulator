@@ -1,7 +1,7 @@
 """Roll a trained emulator out on the held-out film geometries.
 
 Runs in the project env, from the repo root:
-`uv run python -m datagen.eval_geometries --seed 2 --arch fno --configuration test --dataset llg_field_switching`;
+`uv run python -m datagen.eval_geometries --seed 2 --configuration test --dataset llg_field_switching`;
 `scripts/eval_geometries.slrm` runs it on one MIG slice.
 
 The model is fully convolutional and takes the applied field as constant channels and
@@ -21,7 +21,7 @@ seeds and so the same applied fields: the in-distribution reference. Per geometr
 - a free rollout over the whole trajectory from frame 0 for every sample, reduced to
   the per-step MSE and the bulk magnetisation <m>(t) of prediction and reference.
 
-Written to `results/<dataset>/<arch>/<configuration>/seed_<seed>/geometries/`:
+Written to `results/<dataset>/<configuration>/seed_<seed>/geometries/`:
 
     metrics.json          per geometry: cells, one-step mse/vrmse, rollout mse per step
                           (mean over samples and at the last step), bulk <m>(t) per
@@ -30,8 +30,8 @@ Written to `results/<dataset>/<arch>/<configuration>/seed_<seed>/geometries/`:
     rollout_<name>.png    bulk <m>(t), reference against prediction, for one sample
 
 `metrics.json` is rewritten after every geometry, so a run cut short still leaves the
-geometries it finished. A geometry the architecture cannot take (an axis shorter than
-the FNO's modes, say) is skipped with a message rather than ending the run.
+geometries it finished. A geometry the architecture cannot take (an axis too short
+for the reflect padding of the largest dilation, say) is skipped with a message rather than ending the run.
 """
 
 import json
@@ -138,7 +138,7 @@ def rollouts(model, root, filters):
     for j in tqdm(range(len(dataset))):
         sample = numpy_collate([dataset[j]])
         truth = sample["input_fields"]  # (1, N_FRAMES_ROLLOUT, Lx, Ly, F)
-        cond = conditioning(sample["constant_scalars"])
+        cond = conditioning(sample["constant_scalars"], sample["space_grid"])
         t0 = time.perf_counter()
         pred = np.asarray(  # blocks until the rollout is done
             rollout(
@@ -157,9 +157,9 @@ def rollouts(model, root, filters):
     return np.stack(mse), np.stack(bulk_ref), np.stack(bulk_pred), seconds
 
 
-def main(seed, configuration, dataset, arch, batch_size, geometries):
+def main(seed, configuration, dataset, batch_size, geometries):
     data_root = Path("datasets") / dataset
-    results_path = Path("results") / dataset / arch / configuration / f"seed_{seed}"
+    results_path = Path("results") / dataset / configuration / f"seed_{seed}"
     out = results_path / "geometries"
     out.mkdir(exist_ok=True)
 
@@ -181,8 +181,8 @@ def main(seed, configuration, dataset, arch, batch_size, geometries):
             mse, vrmse, cells = one_step_metrics(model, str(data_root), f, batch_size)
             roll_mse, bulk_ref, bulk_pred, seconds = rollouts(model, str(data_root), f)
         except ValueError as e:
-            # the grid does not fit the architecture: an axis shorter than the FNO's
-            # modes, or not divisible by a hierarchical model's levels
+            # the grid does not fit the architecture: an axis too short for the
+            # reflect padding of the largest dilation
             print(f"skipping {name}: {e}", flush=True)
             continue
         n_steps = roll_mse.shape[1]
@@ -229,7 +229,6 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--configuration", type=str, required=True)
     parser.add_argument("--dataset", type=str, required=True)
-    parser.add_argument("--arch", type=str, required=True)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument(
         "--geometries",
@@ -242,7 +241,6 @@ if __name__ == "__main__":
         seed=args.seed,
         configuration=args.configuration,
         dataset=args.dataset,
-        arch=args.arch,
         batch_size=args.batch_size,
         geometries=args.geometries,
     )

@@ -7,16 +7,15 @@ import equinox as eqx
 import jax
 import jax.numpy.linalg as LA
 import pdequinox as pdeqx
-from pdequinox.arch import ClassicFNO
+from pdequinox.arch import DilatedResNet
 
-COND_DIM = 2  # [Hx, Hy] / Ms
+COND_DIM = 3  # [Hx, Hy] / Ms, log(delta / l_ex)
 
 
 @dataclass
 class ModelConfig:
     hidden_channels: int = 32
-    num_blocks: int = 4
-    num_modes: int = 32
+    num_blocks: int = 2
     activation: Callable = jax.nn.gelu
 
 
@@ -35,15 +34,17 @@ class ResidualEmulator(eqx.Module):
 
 
 def build_model(config: ModelConfig, key) -> eqx.Module:
-    network = ClassicFNO(
+    # fixed receptive field in cells, so the weights transfer to any film size;
+    # no GroupNorm, which normalises over the whole film and makes the net non-local
+    network = DilatedResNet(
         num_spatial_dims=2,
         in_channels=5 + COND_DIM,  # m (3) + coords (2) + the embedded conditioning
         out_channels=3,
         hidden_channels=config.hidden_channels,
         num_blocks=config.num_blocks,
         activation=config.activation,
-        num_modes=config.num_modes,
-        boundary_mode="neumann",  # finite thin film, not periodic
+        boundary_mode="neumann",  # reflect padding: finite thin film, not periodic
+        use_norm=False,
         key=key,
     )
     model = ResidualEmulator(network=network)
@@ -58,7 +59,6 @@ def save_model(model: eqx.Module, config: ModelConfig, path: Path, tag: str):
     meta = {
         "hidden_channels": config.hidden_channels,
         "num_blocks": config.num_blocks,
-        "num_modes": config.num_modes,
     }
     # rewrite every time: a stale sidecar builds the wrong skeleton on load
     (path / "metadata.json").write_text(json.dumps(meta))
@@ -71,6 +71,5 @@ def load_model(path: Path, key, tag: str) -> eqx.Module:
     config = ModelConfig(
         hidden_channels=meta["hidden_channels"],
         num_blocks=meta["num_blocks"],
-        num_modes=meta["num_modes"],
     )
     return eqx.tree_deserialise_leaves(path / f"{tag}.eqx", build_model(config, key))

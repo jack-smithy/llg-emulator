@@ -27,6 +27,13 @@ cell grid) is not a harmless approximation: it gets the field wrong by >100%.
 Data written by a *cell-centred* solver (magnum.np, i.e. the `the_well` datasets
 under `datasets/`) has no such projection: `m` lives on the `n = (nx, ny)` cells
 themselves, and `nodal=False` applies `h_cell` to it directly.
+
+`LLGStepper` is the full solver step on those cells, matched to magnum.np: its
+6-neighbour finite-difference exchange (`exchange_field`; neuralmag's cell-space
+exchange is a different operator, ~1e-4 one-step MSE off the data on random
+textures), this module's cell-centred demag and the applied field, through
+neuralmag's LLG right-hand side, integrated over one `dt` by diffrax as
+`nm.LLGSolver.step` does.
 """
 
 import logging as _logging
@@ -34,11 +41,13 @@ from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
 
+import diffrax as dfx
 import equinox as eqx
 import jax.numpy as jnp
 import neuralmag as nm
 from jaxtyping import Array
 from neuralmag.backends.jax.demag_field import h_cell
+from neuralmag.backends.jax.llg_solver_jax import llg_rhs
 
 # neuralmag logs its setup at INFO on every State build (one per model
 # construction); keep the training/eval output readable.
@@ -47,6 +56,8 @@ nm.set_log_level(_logging.WARNING)
 # The mesh geometry is fixed across runs, so the demag tensor is built once and
 # reused (keyed on n/dx/pbc/p by neuralmag).
 NM_CACHE = Path(__file__).resolve().parent / ".nm_cache"
+
+MU_0 = 4e-7 * jnp.pi  # magnum.np's value, not the 2019 SI one
 
 
 def _build_demag(n, dx, Ms: float, p: int) -> tuple[Array, Callable, Callable]:
@@ -149,3 +160,96 @@ def demag_cache(
     Args must be hashable (tuples, not lists) — `lru_cache` keys on them.
     """
     return DemagField(n, dx, Ms=Ms, p=p, nodal=nodal)
+
+
+def exchange_field(m: Array, dx, Ms: float, A: float) -> Array:
+    """magnum.np's exchange field of a cell-centred film, in A/m.
+
+    `2A / (mu0 Ms) * laplacian(m)` with the 5-point stencil over the in-plane
+    neighbours; edge padding makes the missing neighbour equal to the cell itself,
+    i.e. zero flux through the film's edges (Neumann). m: (nx, ny, 3).
+    """
+    mp = jnp.pad(m, ((1, 1), (1, 1), (0, 0)), mode="edge")
+    lap = (mp[2:, 1:-1] + mp[:-2, 1:-1] - 2 * m) / dx[0] ** 2 + (
+        mp[1:-1, 2:] + mp[1:-1, :-2] - 2 * m
+    ) / dx[1] ** 2
+    return 2 * A / (MU_0 * Ms) * lap
+
+
+class LLGStepper(eqx.Module):
+    """One LLG time step of a cell-centred permalloy film, matched to magnum.np.
+
+    `__call__(m0, H)` integrates the LLG under exchange, demag and the applied field
+    `H` from `m0` for `dt` and returns the magnetisation at `t + dt`. `m0` is a single
+    channel-first sample of shape (3, nx, ny), unit vectors on the cells (`nodal=False`,
+    the layout of the `the_well` datasets); `H` is in A/m, either uniform (3,) as in
+    `constant_scalars` or a full (3, nx, ny) field. Vmap externally for batches.
+
+    The step is the one `nm.LLGSolver.step(dt)` takes: diffrax's adaptive Dopri5 with
+    neuralmag's tolerances and time scaling, then renormalised to |m| = 1 as
+    magnum.np does after every step. There are no learnable parameters; the demag
+    tensor is a buffer.
+    """
+
+    demag: DemagField  # cell-centred, in A/m
+    dx: tuple = eqx.field(static=True)
+    dt: float = eqx.field(static=True)  # s, per call
+    Ms: float = eqx.field(static=True)
+    A: float = eqx.field(static=True)
+    alpha: float = eqx.field(static=True)
+    scale_t: float = eqx.field(static=True)  # s, internal time unit
+    rtol: float = eqx.field(static=True)
+    atol: float = eqx.field(static=True)
+    max_steps: int = eqx.field(static=True)
+
+    def __init__(
+        self,
+        n,
+        dx,
+        dt: float,
+        *,
+        Ms: float,
+        A: float,
+        alpha: float,
+        p: int = 20,
+        scale_t: float = 1e-9,
+        rtol: float = 1e-5,
+        atol: float = 1e-5,
+        max_steps: int = 4096,
+    ):
+        self.demag = DemagField(n, dx, Ms, p=p, nondim=False, nodal=False)
+        self.dx = tuple(float(x) for x in dx)
+        self.dt = float(dt)
+        self.Ms, self.A, self.alpha = float(Ms), float(A), float(alpha)
+        self.scale_t = float(scale_t)
+        self.rtol, self.atol = float(rtol), float(atol)
+        self.max_steps = int(max_steps)
+
+    def rhs(self, m: Array, h_ext: Array) -> Array:
+        """dm/dt in 1/s of an (nx, ny, 3) cell field `m` under the applied `h_ext`."""
+        h_demag = jnp.moveaxis(self.demag(jnp.moveaxis(m, -1, 0)), 0, -1)
+        h = exchange_field(m, self.dx, self.Ms, self.A) + h_demag + h_ext
+        return llg_rhs(h, m, self.alpha)
+
+    def __call__(self, m0: Array, H: Array) -> Array:
+        # (3, nx, ny) -> (nx, ny, 3), the vector-last layout neuralmag expects
+        m = jnp.moveaxis(m0, 0, -1)
+        h = jnp.broadcast_to(jnp.moveaxis(jnp.asarray(H, m.dtype), 0, -1), m.shape)
+
+        # integrated in units of scale_t, as LLGSolverJAX does
+        term = dfx.ODETerm(lambda t, y, h: self.scale_t * self.rhs(y, h))
+        sol = dfx.diffeqsolve(
+            term,
+            dfx.Dopri5(),
+            t0=0.0,
+            t1=self.dt / self.scale_t,
+            dt0=1e-14 / self.scale_t,  # LLGSolverJAX's initial step guess
+            y0=m,
+            args=h,
+            stepsize_controller=dfx.PIDController(rtol=self.rtol, atol=self.atol),
+            max_steps=self.max_steps,
+        )
+        # back onto |m| = 1, which the integrator only keeps to its tolerance
+        m1 = sol.ys[-1]
+        m1 = m1 / jnp.linalg.norm(m1, axis=-1, keepdims=True)
+        return jnp.moveaxis(m1, -1, 0)

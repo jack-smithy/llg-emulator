@@ -6,6 +6,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 import optax
 import pdequinox as pdeqx
 import torch
@@ -19,30 +20,27 @@ jax.config.update("jax_compilation_cache_dir", ".jax_cache")
 
 parser = ArgumentParser()
 parser.add_argument("--seed", type=int, required=True)
-parser.add_argument("--arch", type=str, required=True)
 parser.add_argument("--configuration", type=str, required=True)
 parser.add_argument("--dataset", type=str, required=True)
 parser.add_argument("--learning-rate", type=float, default=5e-3)
 parser.add_argument("--batch-size", type=int, default=16)
 parser.add_argument("--epochs", type=int, default=5)
 parser.add_argument("--hidden-channels", type=int, default=64)
-parser.add_argument("--num-blocks", type=int, default=4)
-parser.add_argument("--num-modes", type=int, default=32)
+parser.add_argument("--num-blocks", type=int, default=2)
+# each batch is coarse-grained by one of these integer factors (utils.downsample)
+parser.add_argument("--pool-factors", type=int, nargs="+", default=[1])
 args = parser.parse_args()
 
 path = f"datasets/{args.dataset}"
 results_path = (
-    Path("results")
-    / args.dataset
-    / args.arch
-    / args.configuration
-    / f"seed_{args.seed}"
+    Path("results-v2") / args.dataset / args.configuration / f"seed_{args.seed}"
 )
 results_path.mkdir(exist_ok=True, parents=True)
 
 torch.manual_seed(args.seed)
 generator = torch.Generator().manual_seed(args.seed)
 key = jr.PRNGKey(args.seed)
+rng = np.random.default_rng(args.seed)
 
 
 IN_FRAMES = 1  # the model is a one-step map m_t -> m_{t+1}
@@ -60,6 +58,7 @@ stats["config"] = {
     "in_context_n": IN_FRAMES,
     "hidden_channels": args.hidden_channels,
     "num_blocks": args.num_blocks,
+    "pool_factors": args.pool_factors,
     "seed": args.seed,
     "configuration": args.configuration,
 }
@@ -113,7 +112,6 @@ val_loader = torch.utils.data.DataLoader(
 model_config = ModelConfig(
     hidden_channels=args.hidden_channels,
     num_blocks=args.num_blocks,
-    num_modes=args.num_modes,
 )
 
 key, model_key = jr.split(key)
@@ -132,15 +130,17 @@ stats["val_history"] = []
 for epoch in range(EPOCHS):
     losses = []
     for batch in tqdm(train_loader, mininterval=10):
-        batch = prepare_batch(batch)
+        batch = prepare_batch(batch, int(rng.choice(args.pool_factors)))
         model, opt_state, loss = update_fn(model, batch, optimizer, opt_state)
         losses.append(loss)
     stats["train_history"].append(float(jnp.stack(losses).mean()))
 
     inference_model = eqx.nn.inference_mode(model)
     losses = []
-    for batch in tqdm(val_loader, mininterval=10):
-        batch = prepare_batch(batch)
+    # the factors in turn, so every epoch validates on the same batches
+    for i, batch in enumerate(tqdm(val_loader, mininterval=10)):
+        pool = args.pool_factors[i % len(args.pool_factors)]
+        batch = prepare_batch(batch, pool)
         loss = loss_fn(inference_model, *batch)
         losses.append(loss)
     val_loss = float(jnp.stack(losses).mean())

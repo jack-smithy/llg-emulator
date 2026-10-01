@@ -1,7 +1,7 @@
 # llg-emulator
 
-Neural emulator for Landau-Lifshitz-Gilbert (LLG) micromagnetics: a Fourier neural
-operator that steps the magnetisation of a permalloy thin film forward in time, trained
+Neural emulator for Landau-Lifshitz-Gilbert (LLG) micromagnetics: a dilated ResNet
+(no GroupNorm, so strictly local) that steps the magnetisation of a permalloy thin film forward in time, trained
 on magnum.np simulations stored in [the Well](https://github.com/PolymathicAI/the_well)'s
 HDF5 format. Built with JAX, Equinox and [pdequinox](https://github.com/Ceyron/pdequinox)
 (expected as a sibling checkout at `../pdequinox`).
@@ -28,11 +28,11 @@ make eval-geometries  # roll a trained model out on the held-out film geometries
 The same thing by hand, in the project env:
 
 ```sh
-uv run main.py --seed 0 --arch fno --configuration test --dataset llg_field_switching
-uv run eval.py --seed 0 --arch fno --configuration test --dataset llg_field_switching
+uv run main.py --seed 0 --configuration test --dataset llg_field_switching
+uv run eval.py --seed 0 --configuration test --dataset llg_field_switching
 ```
 
-Weights, metrics and plots land in `results/<dataset>/<arch>/<configuration>/seed_<seed>/`.
+Weights, metrics and plots land in `results/<dataset>/<configuration>/seed_<seed>/`.
 
 ## Data generation
 
@@ -50,5 +50,5 @@ modules, so run them from the repo root as modules:
 ```sh
 uv run python -m datagen.generate_varied_field --out datasets/<name> --n-train 64
 uv run python -m datagen.generate_geometries --out datasets/llg_field_switching --geometry sq512
-uv run python -m datagen.eval_geometries --seed 0 --arch fno --configuration test --dataset llg_field_switching
+uv run python -m datagen.eval_geometries --seed 0 --configuration test --dataset llg_field_switching
 ```

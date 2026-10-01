@@ -12,21 +12,19 @@ export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 set -euo pipefail
 
 DATASET="llg_field_switching"
-ARCH="fno"
 CONFIGURATION="test"
 
 echo "Job started on $(date)"
 echo "Running on node(s): $SLURM_NODELIST"
 echo "Array task (seed): $SLURM_ARRAY_TASK_ID"
 echo "Dataset: $DATASET"
-echo "Configuration: $ARCH $CONFIGURATION"
+echo "Configuration: $CONFIGURATION"
 
 uv run python -c "import utils; utils.device_info()"
 
-# the model is rebuilt from results/$DATASET/$ARCH/$CONFIGURATION/seed_<seed>/metadata.json;
+# the model is rebuilt from results/$DATASET/$CONFIGURATION/seed_<seed>/metadata.json;
 # extra sbatch arguments pass through, e.g. `sbatch scripts/eval_geometries.slrm --geometries sq64 sp4`
 uv run python -m datagen.eval_geometries \
     --seed $SLURM_ARRAY_TASK_ID \
-    --arch $ARCH \
     --configuration $CONFIGURATION \
     --dataset $DATASET "$@"
