@@ -23,5 +23,5 @@ GEOMETRY=$(uv run python -c \
 echo "Geometry: $GEOMETRY"
 
 uv run python -m datagen.generate_geometries \
-    --out datasets/$DATASET/geometries \
+    --out datasets/$DATASET \
     --geometry "$GEOMETRY" "$@"

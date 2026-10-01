@@ -40,11 +40,15 @@ The magnum.np generators live in `datagen/`: `generate_varied_field.py` writes t
 training dataset (256x256 films with a random in-plane applied field;
 `scripts/generate_varied_array.slrm` runs one shard per array task),
 `generate_geometries.py` and `generate_large.py` write the held-out films, and
-`eval_geometries.py` rolls a trained model out on them. They import the top-level
+`eval_geometries.py` rolls a trained model out on them. The held-out films are extra
+files in the dataset's `test` split, `data/test/llg_test_<name>.hdf5` beside the 256x256
+shards `llg_test_<i>.hdf5`; the well loads one resolution at a time, so select a film
+with `include_filters=["llg_test_<name>.hdf5"]` (or the shards by excluding the named
+files), as `eval_geometries.filters` does. They import the top-level
 modules, so run them from the repo root as modules:
 
 ```sh
 uv run python -m datagen.generate_varied_field --out datasets/<name> --n-train 64
-uv run python -m datagen.generate_geometries --out datasets/llg_field_switching/geometries --geometry sq512
+uv run python -m datagen.generate_geometries --out datasets/llg_field_switching --geometry sq512
 uv run python -m datagen.eval_geometries --seed 0 --arch fno --configuration test --dataset llg_field_switching
 ```

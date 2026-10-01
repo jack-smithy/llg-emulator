@@ -7,11 +7,14 @@ Runs in the project env, from the repo root:
 The model is fully convolutional and takes the applied field as constant channels and
 the film's cell-centre (x, y) coordinates in um as two input channels (`utils.with_coords`,
 from the sample's own `space_grid`, so every geometry sits on the training set's real-space
-scale), so weights trained on 256x256 films run on any grid unchanged. Every well root under
-`datasets/<dataset>/geometries/<name>` (written by `datagen/generate_geometries.py`) is
-evaluated, plus the 256x256 `test` split of the training dataset itself, which shares
-the same 8 seeds and so the same applied fields: the in-distribution reference. Per
-geometry, as `eval.py` does on the validation split:
+scale), so weights trained on 256x256 films run on any grid unchanged. Every film is
+one file in the dataset's `test` split, picked out with the well's `include_filters` /
+`exclude_filters` (`filters`), since a split can only be loaded at one resolution at a
+time. Every `GEOMETRIES` film present as `data/test/llg_test_<name>.hdf5` (written by
+`datagen/generate_geometries.py`) is evaluated, plus the 256x256 shards
+`llg_test_<i>.hdf5` of the training dataset's own test split, which share the same 8
+seeds and so the same applied fields: the in-distribution reference. Per geometry, as
+`eval.py` does on the validation split:
 
 - teacher-forced one-step MSE and VRMSE over every (t, t+1) pair, accumulated batch by
   batch so a 1024x1024 film never sits in memory whole;
@@ -47,6 +50,7 @@ from the_well.benchmark.metrics import MSE, VRMSE
 from the_well.data import WellDataset
 from tqdm import tqdm
 
+from datagen.generate_geometries import GEOMETRIES
 from model import load_model
 from plot import plot_rollout, plot_rollout_mse
 from utils import conditioning, numpy_collate, predict, prepare_batch, rollout
@@ -58,10 +62,26 @@ OUT_FRAMES = 1
 N_FRAMES_ROLLOUT = 100  # the whole trajectory: one context frame, 99 predicted
 NUM_WORKERS = 1
 ROLLOUT_IDX = 7  # the sample whose bulk <m>(t) is plotted, as in eval.py
-REFERENCE = "sq256"  # the training film, i.e. the dataset's own test split
+REFERENCE = "sq256"  # the training film, i.e. the dataset's own test shards
 
 
-def one_step_metrics(model, root, batch_size):
+def filters(test_dir, name):
+    """The well's file filters that load film `name` alone from the `test` split.
+
+    Filters are substrings of the file path. The reference is the generator's shards
+    `llg_test_<i>.hdf5`, i.e. everything but the named films.
+    """
+    if name != REFERENCE:
+        return {"include_filters": [f"llg_test_{name}.hdf5"]}
+    named = [
+        p.name
+        for p in test_dir.glob("llg_test_*.hdf5")
+        if not p.stem.removeprefix("llg_test_").isdigit()
+    ]
+    return {"exclude_filters": named}
+
+
+def one_step_metrics(model, root, filters, batch_size):
     """Teacher-forced one-step MSE / VRMSE over every pair, one batch at a time.
 
     returns: (mse, vrmse, cells) — scalars averaged over pairs and fields, and the
@@ -73,6 +93,7 @@ def one_step_metrics(model, root, batch_size):
         n_steps_input=IN_FRAMES,
         n_steps_output=OUT_FRAMES,
         use_normalization=False,
+        **filters,
     )
     loader = torch.utils.data.DataLoader(
         dataset=dataset,
@@ -98,7 +119,7 @@ def one_step_metrics(model, root, batch_size):
     )
 
 
-def rollouts(model, root):
+def rollouts(model, root, filters):
     """Free rollout of every trajectory from its first frame.
 
     returns: (mse, bulk_ref, bulk_pred, seconds) — per-step MSE `(n_traj, T)`, bulk
@@ -111,6 +132,7 @@ def rollouts(model, root):
         n_steps_input=N_FRAMES_ROLLOUT,
         n_steps_output=OUT_FRAMES,
         use_normalization=False,
+        **filters,
     )
     mse, bulk_ref, bulk_pred, seconds = [], [], [], []
     for j in tqdm(range(len(dataset))):
@@ -145,21 +167,19 @@ def main(seed, configuration, dataset, arch, batch_size, geometries):
     model = load_model(results_path, key=jr.PRNGKey(seed), tag="model")
     model = eqx.nn.inference_mode(model)
 
-    roots = {REFERENCE: data_root}
-    roots |= {
-        p.name: p
-        for p in sorted((data_root / "geometries").iterdir())
-        if (p / "data" / "test" / "llg_test.hdf5").exists()
-    }
-    if geometries:
-        roots = {name: roots[name] for name in geometries}
+    test_dir = data_root / "data" / "test"
+    names = geometries or [
+        REFERENCE,
+        *(g for g in GEOMETRIES if (test_dir / f"llg_test_{g}.hdf5").exists()),
+    ]
 
     metrics = {}
-    for name, root in roots.items():
+    for name in names:
         print(f"=== {name}", flush=True)
+        f = filters(test_dir, name)
         try:
-            mse, vrmse, cells = one_step_metrics(model, str(root), batch_size)
-            roll_mse, bulk_ref, bulk_pred, seconds = rollouts(model, str(root))
+            mse, vrmse, cells = one_step_metrics(model, str(data_root), f, batch_size)
+            roll_mse, bulk_ref, bulk_pred, seconds = rollouts(model, str(data_root), f)
         except ValueError as e:
             # the grid does not fit the architecture: an axis shorter than the FNO's
             # modes, or not divisible by a hierarchical model's levels
@@ -212,7 +232,10 @@ if __name__ == "__main__":
     parser.add_argument("--arch", type=str, required=True)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument(
-        "--geometries", nargs="*", help="a subset of names to run; default is all"
+        "--geometries",
+        nargs="*",
+        help="films to run, by their llg_test_<name>.hdf5; default is sq256 and "
+        "every GEOMETRIES film present",
     )
     args = parser.parse_args()
     main(

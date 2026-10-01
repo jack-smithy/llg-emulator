@@ -1,7 +1,7 @@
 """Held-out film geometries for an emulator trained on 256x256 films.
 
 Runs in the project env, from the repo root:
-`uv run python -m datagen.generate_geometries --out <dir> --geometry sq512`.
+`uv run python -m datagen.generate_geometries --out datasets/llg_field_switching --geometry sq512`.
 `scripts/generate_geometries.slrm` runs one array task per entry of `GEOMETRIES`.
 
 Same 5x5x3 nm permalloy cells, material, dt, 1 ns, applied-field distribution and
@@ -13,12 +13,14 @@ dataset. Where the initial condition is drawn per cell, the draw differs with th
 but its family does not. 256x256 itself is covered by that test split, and 6144x6144 by
 `generate_large.py`.
 
-Every geometry is written as its own well root, because the well requires all files in
-a split to share one spatial resolution:
+Every geometry is one file in the `test` split of the training dataset, next to its
+256x256 shards `llg_test_<i>.hdf5`:
 
-    <out>/<geometry>/data/test/llg_test.hdf5
+    <out>/data/test/llg_test_<geometry>.hdf5
 
-Load one with `WellDataset(path=f"{out}/{geometry}", well_split_name="test",
+The well requires every file it loads from a split to share one spatial resolution, so
+load one geometry with its filename as a filter, `WellDataset(path=out,
+well_split_name="test", include_filters=[f"llg_test_{geometry}.hdf5"],
 use_normalization=False)`; `datagen/eval_geometries.py` runs a trained model on all of
 them. The network is fully convolutional and reads the cell coordinates from the sample,
 so the 256x256 weights run on any grid unchanged.
@@ -68,7 +70,7 @@ def main():
 
     nx, ny = GEOMETRIES.get(args.geometry) or map(int, args.geometry.split("x"))
     n = (nx, ny, 1)
-    path = args.out / args.geometry / "data" / "test" / "llg_test.hdf5"
+    path = args.out / "data" / "test" / f"llg_test_{args.geometry}.hdf5"
     if path.exists():
         print(f"{path} exists, skipping")
         return

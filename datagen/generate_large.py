@@ -1,8 +1,12 @@
-"""One permalloy LLG trajectory on the largest film a full GPU can hold, written as the
-`test` split of the varied-field dataset.
+"""One permalloy LLG trajectory on the largest film a full GPU can hold, written into the
+`test` split of the varied-field dataset as `data/test/llg_test_large<N>.hdf5`.
+
+The well requires every file it loads from a split to share one spatial resolution, so
+load it with its filename as a filter, `WellDataset(path=out, well_split_name="test",
+include_filters=["llg_test_large6144.hdf5"], use_normalization=False)`.
 
 Runs in the project env, from the repo root:
-`uv run python -m datagen.generate_large --out datasets/llg_field_switching/large`.
+`uv run python -m datagen.generate_large --out datasets/llg_field_switching`.
 
 Same 5x5x3 nm cells, material, dt and 1 ns as `generate_varied_field.py`, but a single
 N x N film instead of 256x256. The initial condition is SP4's s-state (+x with the ends
@@ -79,7 +83,7 @@ def main():
     step0 = state._step  # accepted RKF45 steps so far
     llg_seconds = 0.0
 
-    path = args.out / "data" / "test" / "llg_test.hdf5"
+    path = args.out / "data" / "test" / f"llg_test_large{args.n}.hdf5"
     part = path.with_name(path.name + ".part")
     with create_split(part, 1, N_T, "micromagnetics_llg_varied_field", n=n) as f:
         for name, value in zip(H_NAMES, H_EXT):
