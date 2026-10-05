@@ -6,6 +6,31 @@ on magnum.np simulations stored in [the Well](https://github.com/PolymathicAI/th
 HDF5 format. Built with JAX, Equinox and [pdequinox](https://github.com/Ceyron/pdequinox)
 (expected as a sibling checkout at `../pdequinox`).
 
+## Models
+
+`model.py` builds one of three emulators of a 10 ps frame, all strictly local and all
+run on the mesh of whatever film they are given (`utils.model_step` arranges the inputs):
+
+- the plain network (`main.py` defaults): m' = normalise(m + N(m, coords, ...)), with
+  `--use-demag` (the exact demag field as inputs) and `--in-frames` (frames of context);
+- solver-in-the-loop (`--solver-in-the-loop`, Um et al. 2020): coarse micromagnetics
+  (`physics.LLGStepper`) steps m and the network corrects its output;
+- the learned-closure LLG (`--closure`): coarse micromagnetics steps m under one extra
+  effective-field term, a closure the network reads off the coarse state,
+  `H_theta = eps Ms N(m, h_ex / Ms, h_d / Ms; H_ext / Ms, eps)` with `eps = l_ex / delta`.
+  Every input is a field in units of Ms on the coarse mesh and the closure is scaled
+  by `eps`, so coarsening the mesh moves the network's inputs into the interior of its
+  training range and sends the model back to coarse micromagnetics, rather than
+  extrapolating a cell-size input; `|m| = 1` holds exactly and the step stays a damped
+  precession, so rollouts cannot run away. The `model.py` docstring has the argument.
+  Train it with `make train-closure` (`scripts/train_closure_array.slrm`: a kernel-3
+  ResNet, `--arch classic`, 8-step unrolls, pool factors 2 4 8, D4 augmentation).
+
+`--pool-factors` trains on the film coarse-grained by integer factors (one drawn per
+batch, `utils.downsample`), `--unroll n` on n-step autoregressive windows, and
+`--augment` (coordinate-free models only) transforms each batch by a random symmetry
+of the square film (`utils.d4`).
+
 ## Setup
 
 ```sh

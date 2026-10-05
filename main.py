@@ -1,6 +1,6 @@
 import json
+from argparse import ArgumentParser, BooleanOptionalAction
 from itertools import islice
-from argparse import ArgumentParser
 from pathlib import Path
 
 import equinox as eqx
@@ -14,7 +14,9 @@ import torch
 from the_well.data import WellDataset
 from tqdm import tqdm
 
-from model import ModelConfig, build_model, save_model
+from datagen.generate_varied_field import DX
+from model import ModelConfig, build_model, load_config, save_model
+from physics import mesh_physics
 from utils import SCALARS, numpy_collate, prepare_batch, loss_fn, update_fn
 
 jax.config.update("jax_compilation_cache_dir", ".jax_cache")
@@ -31,14 +33,47 @@ parser.add_argument("--num-steps", type=int, default=10_000)
 parser.add_argument("--val-every", type=int, default=1_000)
 parser.add_argument("--hidden-channels", type=int, default=64)
 parser.add_argument("--num-blocks", type=int, default=2)
+# the network: model.ARCHS ("dilated": 22 cells of receptive field per block,
+# "classic": 2)
+parser.add_argument("--arch", choices=("dilated", "classic"), default="dilated")
 # each batch is coarse-grained by one of these integer factors (utils.downsample)
 parser.add_argument("--pool-factors", type=int, nargs="+", default=[1])
+# solver-in-the-loop (Um et al. 2020): the network corrects physics.LLGStepper run on
+# each pooled mesh, m' = P(m) + C(P(m)), trained through the solver
+parser.add_argument("--solver-in-the-loop", action=BooleanOptionalAction, default=False)
+# start the network's output at exactly zero (model.ModelConfig.zero_init)
+parser.add_argument("--zero-init", action=BooleanOptionalAction, default=False)
+# the latest frame's exact demag field as 3 more input channels (not with the solver)
+parser.add_argument("--use-demag", action=BooleanOptionalAction, default=False)
+# frames of context the model sees: the latest plus the in-frames - 1 before it
+parser.add_argument("--in-frames", type=int, default=1)
+# the learned-closure LLG (model.ClosureEmulator): physics.LLGStepper on each pooled
+# mesh under the network's closure field, trained through the solver
+parser.add_argument("--closure", action=BooleanOptionalAction, default=False)
+# transform each training batch by a random symmetry of the square film (utils.d4);
+# only for models without coordinate inputs (solver-in-the-loop, closure)
+parser.add_argument("--augment", action=BooleanOptionalAction, default=False)
+# train on n-step autoregressive unrolls, the loss summed over all n steps
+parser.add_argument("--unroll", type=int, default=1)
 args = parser.parse_args()
+if args.augment and not (args.closure or args.solver_in_the_loop):
+    parser.error("--augment leaves the grid as it is: only for coordinate-free models")
 
 path = f"datasets/{args.dataset}"
 results_path = (
     Path("results-v2") / args.dataset / args.configuration / f"seed_{args.seed}"
 )
+# never train one kind of model over a run of another kind: pick another
+# --configuration (overwriting a run of the same kind is fine)
+KIND = ("arch", "solver_in_the_loop", "use_demag", "in_frames", "closure")
+if (results_path / "metadata.json").exists():
+    previous = load_config(results_path)
+    for name in KIND:
+        if getattr(previous, name) != getattr(args, name):
+            raise SystemExit(
+                f"{results_path} holds a run with {name}={getattr(previous, name)}; "
+                "use a different --configuration"
+            )
 results_path.mkdir(exist_ok=True, parents=True)
 
 torch.manual_seed(args.seed)
@@ -47,8 +82,8 @@ key = jr.PRNGKey(args.seed)
 rng = np.random.default_rng(args.seed)
 
 
-IN_FRAMES = 1  # the model is a one-step map m_t -> m_{t+1}
-OUT_FRAMES = 1
+IN_FRAMES = args.in_frames  # context frames per sample
+OUT_FRAMES = args.unroll  # the frames each training window is scored on
 BATCH_SIZE = args.batch_size
 NUM_WORKERS = 4
 NUM_STEPS = args.num_steps
@@ -63,7 +98,15 @@ stats["config"] = {
     "in_context_n": IN_FRAMES,
     "hidden_channels": args.hidden_channels,
     "num_blocks": args.num_blocks,
+    "arch": args.arch,
     "pool_factors": args.pool_factors,
+    "solver_in_the_loop": args.solver_in_the_loop,
+    "unroll": args.unroll,
+    "use_demag": args.use_demag,
+    "in_frames": args.in_frames,
+    "closure": args.closure,
+    "augment": args.augment,
+    "zero_init": args.zero_init,
     "seed": args.seed,
     "configuration": args.configuration,
 }
@@ -117,7 +160,21 @@ val_loader = torch.utils.data.DataLoader(
 model_config = ModelConfig(
     hidden_channels=args.hidden_channels,
     num_blocks=args.num_blocks,
+    arch=args.arch,
+    solver_in_the_loop=args.solver_in_the_loop,
+    zero_init=args.zero_init,
+    use_demag=args.use_demag,
+    in_frames=args.in_frames,
+    closure=args.closure,
 )
+
+# the physics per pool factor (coarse solver / demag): the training film on k-times
+# larger cells
+res = train_dataset.metadata.spatial_resolution
+physics = {
+    k: mesh_physics(model_config, [r // k for r in res], (DX[0] * k, DX[1] * k, DX[2]))
+    for k in args.pool_factors
+}
 
 key, model_key = jr.split(key)
 model = build_model(model_config, model_key)
@@ -149,16 +206,17 @@ def validate(model):
     losses = []
     # the factors in turn, so every validation scores the same batches
     for i, batch in enumerate(val_loader):
-        batch = prepare_batch(batch, args.pool_factors[i % len(args.pool_factors)])
-        losses.append(loss_fn(model, *batch))
+        k = args.pool_factors[i % len(args.pool_factors)]
+        losses.append(loss_fn(model, *prepare_batch(batch, k), physics[k]))
     return float(jnp.stack(losses).mean())
 
 
 losses = []  # device scalars, synced once per window
 batches = islice(cycle(train_loader), NUM_STEPS)
 for step, batch in enumerate(tqdm(batches, total=NUM_STEPS, mininterval=10), 1):
-    batch = prepare_batch(batch, int(rng.choice(args.pool_factors)))
-    model, opt_state, loss = update_fn(model, batch, optimizer, opt_state)
+    k = int(rng.choice(args.pool_factors))
+    batch = prepare_batch(batch, k, int(rng.integers(8)) if args.augment else None)
+    model, opt_state, loss = update_fn(model, batch, optimizer, opt_state, physics[k])
     losses.append(loss)
     if step % args.val_every == 0 or step == NUM_STEPS:
         stats["steps"].append(step)

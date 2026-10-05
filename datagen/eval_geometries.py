@@ -51,13 +51,14 @@ from the_well.data import WellDataset
 from tqdm import tqdm
 
 from datagen.generate_geometries import GEOMETRIES
-from model import load_model
+from datagen.generate_varied_field import DX
+from model import load_config, load_model
+from physics import mesh_physics
 from plot import plot_rollout, plot_rollout_mse
 from utils import conditioning, numpy_collate, predict, prepare_batch, rollout
 
 jax.config.update("jax_compilation_cache_dir", ".jax_cache")
 
-IN_FRAMES = 1  # the model is a one-step map m_t -> m_{t+1}
 OUT_FRAMES = 1
 N_FRAMES_ROLLOUT = 100  # the whole trajectory: one context frame, 99 predicted
 NUM_WORKERS = 1
@@ -81,7 +82,7 @@ def filters(test_dir, name):
     return {"exclude_filters": named}
 
 
-def one_step_metrics(model, root, filters, batch_size):
+def one_step_metrics(model, root, filters, batch_size, config):
     """Teacher-forced one-step MSE / VRMSE over every pair, one batch at a time.
 
     returns: (mse, vrmse, cells) — scalars averaged over pairs and fields, and the
@@ -90,7 +91,7 @@ def one_step_metrics(model, root, filters, batch_size):
     dataset = WellDataset(
         path=root,
         well_split_name="test",
-        n_steps_input=IN_FRAMES,
+        n_steps_input=config.in_frames,
         n_steps_output=OUT_FRAMES,
         use_normalization=False,
         **filters,
@@ -102,12 +103,17 @@ def one_step_metrics(model, root, filters, batch_size):
         num_workers=NUM_WORKERS,
         collate_fn=numpy_collate,
     )
+    res = tuple(dataset.metadata.spatial_resolution)
+    physics = mesh_physics(config, res, DX)
     mse, vrmse = [], []
     for batch in tqdm(loader, mininterval=10):
-        m0, m1, cond = prepare_batch(batch)
+        m0, targets, cond, grid, h = prepare_batch(batch)
         pred, truth = (
             rearrange(x, "B F Lx Ly -> B 1 Lx Ly F")
-            for x in (np.asarray(predict(model, m0, cond)), m1)
+            for x in (
+                np.asarray(predict(model, m0, cond, grid, h, physics)),
+                targets[:, 0],
+            )
         )
         # the well's metrics reduce over space and keep (B, 1, F); keep one per sample
         mse.append(MSE()(pred, truth, dataset.metadata).mean(dim=(1, 2)))
@@ -119,7 +125,7 @@ def one_step_metrics(model, root, filters, batch_size):
     )
 
 
-def rollouts(model, root, filters):
+def rollouts(model, root, filters, config):
     """Free rollout of every trajectory from its first frame.
 
     returns: (mse, bulk_ref, bulk_pred, seconds) — per-step MSE `(n_traj, T)`, bulk
@@ -134,6 +140,9 @@ def rollouts(model, root, filters):
         use_normalization=False,
         **filters,
     )
+    res = tuple(dataset.metadata.spatial_resolution)
+    physics = mesh_physics(config, res, DX)
+    n_in = config.in_frames
     mse, bulk_ref, bulk_pred, seconds = [], [], [], []
     for j in tqdm(range(len(dataset))):
         sample = numpy_collate([dataset[j]])
@@ -143,15 +152,20 @@ def rollouts(model, root, filters):
         pred = np.asarray(  # blocks until the rollout is done
             rollout(
                 model,
-                truth[:, :IN_FRAMES],
+                truth[:, :n_in],
                 cond,
                 sample["space_grid"],
-                n_steps=truth.shape[1] - IN_FRAMES,
+                n_steps=truth.shape[1] - n_in,
+                h=sample["constant_scalars"][:, 3:6],
+                physics=physics,
             )
         )
         seconds.append(time.perf_counter() - t0)
-        ref = truth[:, IN_FRAMES:]
-        mse.append(MSE()(pred, ref, dataset.metadata)[0].mean(dim=-1).numpy())  # (T,)
+        ref = truth[:, n_in:]
+        # the n_in - 1 frames after frame 0 are context, not predictions: NaN, so every
+        # curve is indexed by the same step as a one-frame model's
+        step_mse = MSE()(pred, ref, dataset.metadata)[0].mean(dim=-1).numpy()
+        mse.append(np.concatenate([np.full(n_in - 1, np.nan), step_mse]))  # (T,)
         bulk_ref.append(ref[0].mean(axis=(1, 2)))
         bulk_pred.append(pred[0].mean(axis=(1, 2)))
     return np.stack(mse), np.stack(bulk_ref), np.stack(bulk_pred), seconds
@@ -165,6 +179,7 @@ def main(seed, configuration, dataset, batch_size, geometries):
 
     # rebuilt from model.eqx + metadata.json alone; the key only seeds the skeleton
     model = load_model(results_path, key=jr.PRNGKey(seed), tag="model")
+    config = load_config(results_path)
     model = eqx.nn.inference_mode(model)
 
     test_dir = data_root / "data" / "test"
@@ -178,8 +193,12 @@ def main(seed, configuration, dataset, batch_size, geometries):
         print(f"=== {name}", flush=True)
         f = filters(test_dir, name)
         try:
-            mse, vrmse, cells = one_step_metrics(model, str(data_root), f, batch_size)
-            roll_mse, bulk_ref, bulk_pred, seconds = rollouts(model, str(data_root), f)
+            mse, vrmse, cells = one_step_metrics(
+                model, str(data_root), f, batch_size, config
+            )
+            roll_mse, bulk_ref, bulk_pred, seconds = rollouts(
+                model, str(data_root), f, config
+            )
         except ValueError as e:
             # the grid does not fit the architecture: an axis too short for the
             # reflect padding of the largest dilation
@@ -200,7 +219,7 @@ def main(seed, configuration, dataset, batch_size, geometries):
         }
         print(
             f"{name} {cells[0]}x{cells[1]}: one-step mse {mse:.3e} vrmse {vrmse:.3f}, "
-            f"rollout mse mean {roll_mse.mean():.3e} final {roll_mse[:, -1].mean():.3e}, "
+            f"rollout mse mean {np.nanmean(roll_mse):.3e} final {roll_mse[:, -1].mean():.3e}, "
             f"{metrics[name]['rollout']['seconds_per_step'] * 1e3:.1f} ms/step",
             flush=True,
         )

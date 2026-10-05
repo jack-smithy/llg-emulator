@@ -10,6 +10,7 @@
     rollout_large.png         MSE(t) on the 30.7 um film, one panel per cell size
     mse_vs_step.png           MSE against rollout step, films x cell sizes, each
                               configuration against micromagnetics on the same mesh
+    vrmse_vs_step.png         the same for the well's VRMSE (recorded since 2026-10-02)
     bulk_large.png            <m_x>(t), <m_y>(t) on the 30.7 um film
     snapshots_large_k<k>.png  in-plane angle of m: truth, each arm, naive coarse
     runtime.png               seconds per 10 ps step against number of cells
@@ -97,10 +98,10 @@ def _load(cache, films, runs):
             for name, key in (("baseline", "naive"), ("persistence", "persistence")):
                 p = cache / f"{name}_{film}_k{k}.npz"
                 if p.exists():
-                    entry[key] = dict(np.load(p))
+                    entry[key] = _masked(np.load(p))
             for arm, arm_runs in arms.items():
                 seeds = [
-                    dict(np.load(p))
+                    _masked(np.load(p))
                     for r in arm_runs
                     if (p := run_dir(cache, r) / f"model_{film}_k{k}.npz").exists()
                 ]
@@ -111,8 +112,18 @@ def _load(cache, films, runs):
     return data, list(arms)
 
 
+def _masked(npz):
+    """A stage file as a dict, its MSE / VRMSE curves masked where NaN (a
+    multi-frame model's context steps), so their means skip those steps."""
+    d = dict(npz)
+    for key in ("mse", "vrmse"):
+        if key in d:
+            d[key] = np.ma.masked_invalid(d[key])
+    return d
+
+
 def _bulk_mse(d):
-    return float(((d["bulk_pred"] - d["bulk_ref"]) ** 2).mean())
+    return float(np.nanmean((d["bulk_pred"] - d["bulk_ref"]) ** 2))
 
 
 def _summary(data, arms):
@@ -171,7 +182,7 @@ def _error_vs_cell(data, arms, films, path):
         ax.plot(
             [CELL_NM * k for k in kk],
             [data[film, k]["naive"]["mse"].mean() for k in kk],
-            color=NAIVE_COLOR, lw=1.8, marker="s", ms=4, label="micromagnetics at that cell",
+            color=NAIVE_COLOR, lw=1.8, marker="s", ms=4, label="coarse solver (magnum.np at that cell)",
         )  # fmt: skip
         ax.plot(
             cells,
@@ -206,7 +217,7 @@ def _error_vs_film(data, arms, films, path, ks=(4, 8, 16)):
         ff = [f for f in fs if "naive" in data[f, k]]
         ax.plot([FILM_UM[f] for f in ff], [data[f, k]["naive"]["mse"].mean() for f in ff],
                 color=NAIVE_COLOR, lw=1.8, marker="s", ms=4,
-                label="micromagnetics at that cell")  # fmt: skip
+                label="coarse solver (magnum.np at that cell)")  # fmt: skip
         ax.plot(x, [data[f, k]["persistence"]["mse"].mean() for f in fs], color=MUTED,
                 lw=1.2, ls="--", label="persistence")  # fmt: skip
         ax.axvline(1.28, color=MUTED, lw=0.8, ls=":")
@@ -239,14 +250,14 @@ def _rollout_large(data, arms, path):
                                     alpha=0.15, lw=0)  # fmt: skip
         if "naive" in e:
             ax.plot(t, e["naive"]["mse"], color=NAIVE_COLOR, lw=1.8,
-                    label="micromagnetics at that cell")  # fmt: skip
+                    label="coarse solver (magnum.np at that cell)")  # fmt: skip
         ax.plot(t, e["persistence"]["mse"], color=MUTED, lw=1.2, ls="--",
                 label="persistence")  # fmt: skip
         ax.set(yscale="log", title=f"{CELL_NM * k:g} nm ({6144 // k}^2 cells)")
         ax.set_xlabel("time (ns)", fontsize=8)
         ax.title.set_fontsize(9)
         _style(ax)
-    axs[0].set_ylabel("MSE vs coarse-grained truth", fontsize=8)
+    axs[0].set_ylabel("MSE vs magnum.np data (coarse-grained)", fontsize=8)
     fig.suptitle("30.7 um film: free rollout from the coarse-grained first frame",
                  fontsize=9)  # fmt: skip
     _legend_below(fig, axs)
@@ -254,12 +265,19 @@ def _rollout_large(data, arms, path):
     plt.close(fig)
 
 
-def _mse_vs_step(
-    data, arms, path, films=("sq256", "sq1024", "large"), cells=(10, 20, 40, 80)
+def _metric_vs_step(
+    data,
+    arms,
+    path,
+    metric="mse",
+    films=("sq256", "sq1024", "large"),
+    cells=(10, 20, 40, 80),
 ):
-    """Rollout MSE against step, each configuration against micromagnetics on the
-    same coarse mesh (magnum.np), one row per film and one column per cell size. Colours follow each configuration's index in
-    `arms`, as in the other figures."""
+    """Rollout `metric` ("mse" or "vrmse") against step, each configuration against
+    micromagnetics on the same coarse mesh (magnum.np), one row per film and one column
+    per cell size; entries cached before the metric was recorded are left out. Colours
+    follow each configuration's index in `arms`, as in the other figures."""
+    name = {"mse": "MSE", "vrmse": "VRMSE"}[metric]
     fig, axs = plt.subplots(len(films), len(cells), figsize=(3.0 * len(cells), 2.5 * len(films)),
                             sharex=True, squeeze=False)  # fmt: skip
     step = np.arange(1, 101)
@@ -271,21 +289,22 @@ def _mse_vs_step(
                 ax.set_axis_off()
                 continue
             for i, arm in enumerate(arms):
-                if arm in e:
-                    y = np.stack([d["mse"] for d in e[arm]])
+                if arm in e and all(metric in d for d in e[arm]):
+                    y = np.stack([d[metric] for d in e[arm]])
                     ax.plot(step, y.mean(0), color=ARM_COLORS[i], lw=1.6, label=arm)
                     if len(y) > 1:
                         ax.fill_between(step, y.min(0), y.max(0), color=ARM_COLORS[i],
                                         alpha=0.15, lw=0)  # fmt: skip
-            if "naive" in e:
-                ax.plot(step, e["naive"]["mse"], color=NAIVE_COLOR, lw=1.8,
-                        label="magnum.np at that cell")  # fmt: skip
+            if metric in e.get("naive", {}):
+                ax.plot(step, e["naive"][metric], color=NAIVE_COLOR, lw=1.8,
+                        label="coarse solver (magnum.np at that cell)")  # fmt: skip
             ax.set_yscale("log")
             if r == 0:
                 ax.set_title(f"{cell} nm cells", fontsize=9)
             if all(not a.axison for a in axs[r, :c]):
                 ax.set_ylabel(
-                    f"{film} ({FILM_UM[film]:g} um)\nMSE vs truth", fontsize=8
+                    f"{film} ({FILM_UM[film]:g} um)\n{name} vs magnum.np data",
+                    fontsize=8,
                 )
             if r == len(films) - 1:
                 ax.set_xlabel("rollout step (10 ps)", fontsize=8)
@@ -313,7 +332,7 @@ def _bulk_large(data, arms, path):
                             lw=1.6, label=arm)  # fmt: skip
             if "naive" in e:
                 ax.plot(t, e["naive"]["bulk_pred"][0][:, c], color=NAIVE_COLOR, lw=1.6,
-                        ls="-.", label="micromagnetics at that cell")  # fmt: skip
+                        ls="-.", label="coarse solver (magnum.np at that cell)")  # fmt: skip
             if j == 0:
                 ax.set_ylabel(name, fontsize=8)
             if c == 0:
@@ -443,7 +462,7 @@ def _demo(demo_file, cache, path_bulk, path_snap):
     for i, r in enumerate(r for r in runs if r != "solver"):
         colors[r] = ARM_COLORS[i]
     label = {r: f"{r.split('__')[-2]}, {r.split('__')[-1].replace('_', ' ')}"
-             if "__" in r else "micromagnetics at that cell" for r in runs}  # fmt: skip
+             if "__" in r else "coarse solver (magnum.np at that cell)" for r in runs}  # fmt: skip
     side_mm = float(d["cells"]) * float(d["cell_nm"]) * 1e-6
     fig, axs = plt.subplots(1, 2, figsize=(8.4, 3.0), sharex=True)
     for c, (ax, name) in enumerate(zip(axs, ("<m_x>", "<m_y>"))):
@@ -505,7 +524,10 @@ def report(cache, films, runs, out=None):
     cell_films = [f for f in ("sq256", "sq1024", "large") if f in films] or films
     _error_vs_cell(data, arms, cell_films, out / "error_vs_cell_size.png")
     _error_vs_film(data, arms, films, out / "error_vs_film_size.png")
-    _mse_vs_step(data, arms, out / "mse_vs_step.png", films=cell_films)
+    for metric in ("mse", "vrmse"):
+        _metric_vs_step(
+            data, arms, out / f"{metric}_vs_step.png", metric, films=cell_films
+        )
     if any(f == "large" for f, _ in data):
         _rollout_large(data, arms, out / "rollout_large.png")
         _bulk_large(data, arms, out / "bulk_large.png")
