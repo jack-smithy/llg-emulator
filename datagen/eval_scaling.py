@@ -110,24 +110,43 @@ def load_truth(cache, film, k):
     return truth, np.asarray(meta["H"]), tuple(meta["dx"])
 
 
+def vrmse(pred, truth, eps=1e-7):
+    """the well's VRMSE per step: sqrt(spatial MSE / (spatial variance of the truth
+    + eps)) per trajectory, step and component (`the_well...VRMSE`, unbiased std),
+    then the mean over components and trajectories. (n_traj, T, nx, ny, 3) -> (T,)."""
+    err = ((pred - truth) ** 2).mean(axis=(2, 3))
+    var = truth.std(axis=(2, 3), ddof=1) ** 2
+    return np.sqrt(err / (var + eps)).mean(axis=(0, 2))
+
+
 def metrics(pred, truth):
-    """pred, truth: (n_traj, T, nx, ny, 3) -> per-step MSE (T,) and bulk <m>(t)
-    (n_traj, T, 3) of both, the mean over trajectories of the MSE."""
+    """pred, truth: (n_traj, T, nx, ny, 3) -> per-step MSE and VRMSE (T,) and bulk
+    <m>(t) (n_traj, T, 3) of both, MSE and VRMSE averaged over trajectories."""
     mse = ((pred - truth) ** 2).mean(axis=(2, 3, 4)).mean(axis=0)
-    return mse, pred.mean(axis=(2, 3)), truth.mean(axis=(2, 3))
+    return mse, vrmse(pred, truth), pred.mean(axis=(2, 3)), truth.mean(axis=(2, 3))
 
 
-def save_stage(path, pred, truth, seconds_per_step, keep_ref=False, **extra):
+def done(path):
+    """A stage output that exists and already carries every metric (outputs from
+    before `vrmse` was recorded are redone)."""
+    return path.exists() and "vrmse" in np.load(path).files
+
+
+def save_stage(path, pred, truth, seconds_per_step, keep_ref=False, context=0, **extra):
     """Metrics plus float16 snapshots of the first trajectory; the reference
     snapshots (the same for every stage) only where `keep_ref`, i.e. once, with
-    the persistence baseline."""
-    mse, bulk_pred, bulk_ref = metrics(pred, truth)
+    the persistence baseline. The first `context` steps of pred are the true frames a
+    multi-frame model was given, not predictions: their MSE and VRMSE are NaN."""
+    mse, vrmse_, bulk_pred, bulk_ref = metrics(pred, truth)
+    mse[:context] = np.nan
+    vrmse_[:context] = np.nan
     snaps = {"snap_pred": pred[0, list(SNAPSHOTS)].astype(np.float16)}
     if keep_ref:
         snaps["snap_ref"] = truth[0, list(SNAPSHOTS)].astype(np.float16)
     np.savez(
         path,
         mse=mse,
+        vrmse=vrmse_,
         bulk_pred=bulk_pred,
         bulk_ref=bulk_ref,
         seconds_per_step=seconds_per_step,
@@ -200,10 +219,10 @@ def stage_baseline(cache, films):
             persist = cache / f"persistence_{film}_k{k}.npz"
             truth, hs, dx = load_truth(cache, film, k)
             ref = truth[:, 1:]
-            if not persist.exists():
+            if not done(persist):
                 persisted = np.repeat(truth[:, :1], N_STEPS, axis=1)
                 save_stage(persist, persisted, ref, 0.0, keep_ref=True)
-            if k == 1 or out.exists():
+            if k == 1 or done(out):
                 continue
             preds, seconds = [], []
             for m0, h in zip(truth[:, 0], hs):
@@ -291,23 +310,34 @@ def stage_speed(cache, films, n_time=5):
     out.write_text(json.dumps(rows, indent=1))
 
 
-def model_speed(model, sizes=(64, 128, 256, 512, 1024, 2048)):
+def model_speed(model, config, sizes=(64, 128, 256, 512, 1024, 2048)):
     """Seconds per 10 ps step of one trajectory at 5 nm on an N^2 film, for the
     speed comparison with the reference solver on the same mesh: the emulator's
-    cost does not depend on the state, so a random one will do."""
+    cost does not depend on the state, so a random one will do. A solver-in-the-loop
+    model's cost includes its coarse solver, a demag model's its demag field."""
     import jax.numpy as jnp
     import jax.random as jr
 
+    from physics import mesh_physics
     from utils import conditioning, rollout
 
     rows = {}
     for n in sizes:
-        m = jr.normal(jr.PRNGKey(0), (1, 1, n, n, 3))
+        m = jr.normal(jr.PRNGKey(0), (1, config.in_frames, n, n, 3))
         m = m / jnp.linalg.norm(m, axis=-1, keepdims=True)
         x = (jnp.arange(n) + 0.5) * DX[0]
         grid = jnp.stack(jnp.meshgrid(x, x, indexing="ij"), axis=-1)[None]
         scalars = jnp.array([[MATERIAL["Ms"], MATERIAL["A"], 0.02, 2e4, 1e4, 0.0]])
-        args = (model, m, conditioning(scalars, grid), grid, 10)
+        physics = mesh_physics(config, (n, n), DX)
+        args = (
+            model,
+            m,
+            conditioning(scalars, grid),
+            grid,
+            10,
+            scalars[:, 3:6],
+            physics,
+        )
         np.asarray(rollout(*args))
         t0 = time.perf_counter()
         np.asarray(rollout(*args))
@@ -322,28 +352,34 @@ def stage_model(cache, films, runs, dataset, speed=True):
     import jax.numpy as jnp
     import jax.random as jr
 
-    from model import load_model
+    from model import load_config, load_model
+    from physics import mesh_physics
     from utils import conditioning, rollout
 
     jax.config.update("jax_compilation_cache_dir", ".jax_cache")
     for run in runs:
-        model = load_model(Path("results-v2") / dataset / run, jr.PRNGKey(0), "model")
-        model = eqx.nn.inference_mode(model)
+        path = Path("results-v2") / dataset / run
+        model = eqx.nn.inference_mode(load_model(path, jr.PRNGKey(0), "model"))
+        config = load_config(path)
+        # a multi-frame model starts from the first n_in true frames
+        n_in = config.in_frames
+        n_steps = N_STEPS - (n_in - 1)
         rdir = run_dir(cache, run)
         rdir.mkdir(parents=True, exist_ok=True)
         speed_file = rdir / "speed_model.json"
         if speed and not speed_file.exists():
-            speed_file.write_text(json.dumps(model_speed(model), indent=1))
+            speed_file.write_text(json.dumps(model_speed(model, config), indent=1))
         for film in films:
             for k in FILMS[film][1]:
                 out = rdir / f"model_{film}_k{k}.npz"
-                if out.exists():
+                if done(out):
                     continue
                 truth, hs, dx = load_truth(cache, film, k)
                 n_traj, _, nx, ny, _ = truth.shape
                 x = (jnp.arange(nx) + 0.5) * dx[0]
                 y = (jnp.arange(ny) + 0.5) * dx[1]
                 grid1 = jnp.stack(jnp.meshgrid(x, y, indexing="ij"), axis=-1)[None]
+                physics = mesh_physics(config, (nx, ny), dx)
                 scalars = np.zeros((n_traj, 6), np.float32)
                 scalars[:, 0] = MATERIAL["Ms"]
                 scalars[:, 1] = MATERIAL["A"]
@@ -357,29 +393,33 @@ def stage_model(cache, films, runs, dataset, speed=True):
                     b = sl.stop - sl.start
                     grid = jnp.repeat(grid1, b, axis=0)
                     cond = conditioning(jnp.asarray(scalars[sl]), grid)
-                    x0 = jnp.asarray(truth[sl, :1])
-                    args = (model, x0, cond, grid, N_STEPS)
+                    x0 = jnp.asarray(truth[sl, :n_in])
+                    h = jnp.asarray(hs[sl], jnp.float32)
+                    args = (model, x0, cond, grid, n_steps, h, physics)
                     if i == 0:
                         np.asarray(rollout(*args))  # compile for this mesh
                     t0 = time.perf_counter()
-                    preds.append(np.asarray(rollout(*args)))
-                    seconds.append((time.perf_counter() - t0) / (N_STEPS * b))
+                    # context frames first, so pred lines up with truth[:, 1:]
+                    pred = np.asarray(rollout(*args))
+                    preds.append(np.concatenate([truth[sl, 1:n_in], pred], axis=1))
+                    seconds.append((time.perf_counter() - t0) / (n_steps * b))
                 # one trajectory alone, as the solver runs, for the speed comparison
-                args = (model, x0[:1], cond[:1], grid[:1], N_STEPS)
+                args = (model, x0[:1], cond[:1], grid[:1], n_steps, h[:1], physics)
                 np.asarray(rollout(*args))
                 t0 = time.perf_counter()
                 np.asarray(rollout(*args))
-                single = (time.perf_counter() - t0) / N_STEPS
+                single = (time.perf_counter() - t0) / n_steps
                 mse = save_stage(
                     out,
                     np.concatenate(preds),
                     truth[:, 1:],
                     single,
+                    context=n_in - 1,
                     batched_seconds_per_step=float(np.median(seconds)),
                 )
                 print(
                     f"model {run} {film} k={k} ({nx}x{ny}): rollout mse mean "
-                    f"{mse.mean():.2e} final {mse[-1]:.2e}, "
+                    f"{np.nanmean(mse):.2e} final {mse[-1]:.2e}, "
                     f"{single * 1e3:.2f} ms/step single, "
                     f"{np.median(seconds) * 1e3:.2f} ms/step/traj batched",
                     flush=True,
@@ -393,7 +433,8 @@ def tiled_network(model, x, cond, halo, tile=1024):
     cropped, so for the strictly local network (no GroupNorm) the result equals the
     whole-mesh one.
 
-    x: (5, nx, ny) as `utils.with_coords` assembles one sample; cond: (3,).
+    x: (5, nx, ny) as `utils.with_coords` assembles one sample, or the coarse step
+    P(m) (3, nx, ny) for a solver-in-the-loop model; cond: (3,).
     """
     import equinox as eqx
     import jax.numpy as jnp
@@ -435,8 +476,8 @@ def stage_demo(cache, runs, dataset, side_um=1000.0, cell_nm=320.0):
     import jax.numpy as jnp
     import jax.random as jr
 
-    from model import load_model
-    from physics import LLGStepper
+    from model import load_config, load_model
+    from physics import LLGStepper, demag_cache
     from utils import conditioning, with_coords
 
     jax.config.update("jax_compilation_cache_dir", ".jax_cache")
@@ -449,6 +490,9 @@ def stage_demo(cache, runs, dataset, side_um=1000.0, cell_nm=320.0):
     relaxer = LLGStepper((n, n), dx, DT, **(MATERIAL | {"alpha": 1.0}))
     step_relax = eqx.filter_jit(lambda s, m: s(m, jnp.zeros(3)))
     step_solver = eqx.filter_jit(lambda s, m, h: s(m, h))
+    # the demag module of the demo mesh, built only if a use_demag run asks for it
+    demag_field = eqx.filter_jit(lambda d, m: d(m))
+    demag_mesh = []
     m = jnp.zeros((3, n, n)).at[0].set(1.0)
     t0 = time.perf_counter()
     for _ in range(200):
@@ -493,9 +537,21 @@ def stage_demo(cache, runs, dataset, side_um=1000.0, cell_nm=320.0):
         model = eqx.nn.inference_mode(load_model(path, jr.PRNGKey(0), "model"))
         meta = json.loads((path / "metadata.json").read_text())
         halo = RF_PER_BLOCK * meta["num_blocks"]
+        config = load_config(path)
+        if config.in_frames > 1:
+            # the demo film starts from one relaxed state: no frame history to give
+            print(f"  skipping {run}: needs {config.in_frames} frames of context")
+            continue
 
-        def step_model(m, model=model, halo=halo):
-            x = with_coords(m[None], grid)[0]
+        def step_model(m, model=model, halo=halo, config=config):
+            if config.solver_in_the_loop:  # the network corrects the coarse step P(m)
+                x = step_solver(solver, m, hj)
+            else:
+                x = with_coords(m[None], grid)[0]
+                if config.use_demag:  # the whole film's field, then tiled with the rest
+                    if not demag_mesh:
+                        demag_mesh.append(demag_cache((n, n), dx))
+                    x = jnp.concatenate([x, demag_field(demag_mesh[0], m)])
             return tiled_network(model, x, cond[0], halo)
 
         run_out = dict(out)

@@ -20,6 +20,14 @@ train: logs
 train-array: logs
 	sbatch scripts/train_array.slrm
 
+train-sil: logs
+	sbatch scripts/train_sil_array.slrm
+
+# the demag-input model with 1 and 4 frames of context
+train-demag: logs
+	sbatch --export=ALL,IN_FRAMES=1 scripts/train_demag_array.slrm
+	sbatch --export=ALL,IN_FRAMES=4 scripts/train_demag_array.slrm
+
 eval: logs
 	sbatch scripts/eval.slrm
 

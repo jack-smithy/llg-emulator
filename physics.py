@@ -37,6 +37,7 @@ neuralmag's LLG right-hand side, integrated over one `dt` by diffrax as
 """
 
 import logging as _logging
+import os
 from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
@@ -44,10 +45,21 @@ from pathlib import Path
 import diffrax as dfx
 import equinox as eqx
 import jax.numpy as jnp
+
+# importing neuralmag sets XLA_PYTHON_CLIENT_PREALLOCATE=false, i.e. on-demand GPU
+# allocation; that fragments enough that a one-step training batch (one ~16 GiB
+# buffer at 32 x 256^2) no longer fits a 24 GiB slice, so put back whatever was
+# there before (JAX reads it when its GPU backend starts, after these imports)
+_PREALLOCATE = os.environ.get("XLA_PYTHON_CLIENT_PREALLOCATE")
 import neuralmag as nm
 from jaxtyping import Array
 from neuralmag.backends.jax.demag_field import h_cell
 from neuralmag.backends.jax.llg_solver_jax import llg_rhs
+
+if _PREALLOCATE is None:
+    os.environ.pop("XLA_PYTHON_CLIENT_PREALLOCATE", None)
+else:
+    os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = _PREALLOCATE
 
 # neuralmag logs its setup at INFO on every State build (one per model
 # construction); keep the training/eval output readable.
@@ -253,3 +265,30 @@ class LLGStepper(eqx.Module):
         m1 = sol.ys[-1]
         m1 = m1 / jnp.linalg.norm(m1, axis=-1, keepdims=True)
         return jnp.moveaxis(m1, -1, 0)
+
+
+@lru_cache(maxsize=16)
+def stepper_cache(n: tuple, dx: tuple) -> LLGStepper:
+    """`LLGStepper` for one mesh of the dataset's permalloy, one frame (10 ps) per
+    call, built at most once per process like `demag_cache`."""
+    from datagen.generate_varied_field import DT, MATERIAL
+
+    return LLGStepper(n, dx, DT, **MATERIAL)
+
+
+class MeshPhysics(eqx.Module):
+    """What a model needs from physics on one mesh, passed alongside it: the coarse
+    solver for a solver-in-the-loop model, the (nondimensional) demag field module for
+    a `use_demag` one; either is None when the model does not use it."""
+
+    solver: LLGStepper | None = None
+    demag: DemagField | None = None
+
+
+def mesh_physics(config, n: tuple, dx: tuple) -> MeshPhysics:
+    """`MeshPhysics` for a `model.ModelConfig` on the mesh of `n` cells of `dx`."""
+    n, dx = tuple(int(x) for x in n), tuple(float(x) for x in dx)
+    return MeshPhysics(
+        stepper_cache(n, dx) if config.solver_in_the_loop else None,
+        demag_cache(n, dx) if config.use_demag else None,
+    )

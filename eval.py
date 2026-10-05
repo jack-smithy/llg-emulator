@@ -11,7 +11,9 @@ import torch
 from the_well.benchmark.metrics import MSE, VRMSE
 from the_well.data import WellDataset
 
-from model import load_model
+from datagen.generate_varied_field import DX
+from model import load_config, load_model
+from physics import mesh_physics
 from plot import animate_channels, plot_learning_curves, plot_norms, plot_rollout
 from utils import (
     conditioning,
@@ -23,7 +25,6 @@ from utils import (
 
 jax.config.update("jax_compilation_cache_dir", ".jax_cache")
 
-IN_FRAMES = 1  # the model is a one-step map m_t -> m_{t+1}
 OUT_FRAMES = 1
 NUM_WORKERS = 1
 N_FRAMES_ROLLOUT = 100
@@ -41,6 +42,8 @@ def main(seed, configuration, dataset):
     # skeleton whose weights are then overwritten
     model = load_model(results_path, key=jr.PRNGKey(seed), tag="model")
     model = eqx.nn.inference_mode(model)
+    config = load_config(results_path)
+    IN_FRAMES = config.in_frames  # context frames the model takes
     print("model loaded")
 
     ### validation
@@ -58,7 +61,9 @@ def main(seed, configuration, dataset):
         num_workers=NUM_WORKERS,
         collate_fn=numpy_collate,
     )
-    pred, truth = one_step_preds(model, loader)
+    # the coarse solver / demag a model uses, on the native mesh
+    physics = mesh_physics(config, val_dataset.metadata.spatial_resolution, DX)
+    pred, truth = one_step_preds(model, loader, physics)
     stats["metrics"] = {
         "mse": MSE()(pred, truth, val_dataset.metadata).mean().item(),
         "vrmse": VRMSE()(pred, truth, val_dataset.metadata).mean().item(),
@@ -85,6 +90,8 @@ def main(seed, configuration, dataset):
         cond,
         sample["space_grid"],
         n_steps=truth.shape[1] - IN_FRAMES,
+        h=sample["constant_scalars"][:, 3:6],
+        physics=physics,
     )
     truth = truth[:, IN_FRAMES:]
 

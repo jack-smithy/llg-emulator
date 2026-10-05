@@ -68,47 +68,82 @@ def downsample(m, grid, factor: int):
 
 
 def prepare_batch(batch, pool: int = 1):
-    """One-step batch -> `(m0, m1, cond)` in the model's layout, coarse-grained by
+    """Batch -> `(ms, targets, cond, grid, h)` in the model's layout, coarse-grained by
     `pool` first.
 
-    m0: (B, 5, Lx, Ly), the frame with the cell grid appended; m1: (B, 3, Lx, Ly);
-    cond: (B, 3).
+    ms: (B, n_in, 3, Lx, Ly), the input frames, oldest first (n_in = the model's
+    `in_frames`); targets: (B, T, 3, Lx, Ly), the T frames after them (T = 1 for
+    one-step training, n for an n-step unroll); cond: (B, 3); grid: (B, Lx, Ly, 2)
+    cell centres; h: (B, 3) applied field in A/m, what a solver takes.
     """
-    m0 = rearrange(batch["input_fields"], "B 1 Lx Ly F -> B F Lx Ly")
-    m1 = rearrange(batch["output_fields"], "B 1 Lx Ly F -> B F Lx Ly")
-    m0, grid = downsample(m0, batch["space_grid"], pool)
-    m1, _ = downsample(m1, batch["space_grid"], pool)
-    c = conditioning(batch["constant_scalars"], grid)
+    grid0 = batch["space_grid"]
 
-    return with_coords(m0, grid), m1, c
+    def frames(x):  # (B, T, Lx, Ly, F) -> (B, T, F, Lx', Ly') on the pooled mesh
+        T = x.shape[1]
+        x = rearrange(x, "B T Lx Ly F -> (B T) F Lx Ly")
+        x, grid = downsample(x, np.repeat(grid0, T, axis=0), pool)
+        return rearrange(x, "(B T) F Lx Ly -> B T F Lx Ly", T=T), grid[::T]
+
+    ms, grid = frames(batch["input_fields"])
+    targets, _ = frames(batch["output_fields"])
+    scalars = batch["constant_scalars"]
+    return ms, targets, conditioning(scalars, grid), grid, scalars[:, 3:6]
+
+
+def model_step(model, ms, cond, grid, h, physics=None):
+    """One emulator step for a batch: frames ms (B, n_in, 3, Lx, Ly), oldest first ->
+    the next frame (B, 3, Lx, Ly).
+
+    `physics` is the `physics.MeshPhysics` of this mesh. With its `solver` this is
+    solver-in-the-loop (Um et al. 2020): the coarse solver steps the latest frame under
+    the applied field h (B, 3) and the network corrects its output, m' = P(m) + C(P(m))
+    (`model.ResidualEmulator` adds C to its input's first 3 channels). Otherwise the
+    network sees the latest frame first, the older ones newest first, the cell
+    coordinates and, with `physics.demag`, the latest frame's demag field.
+    """
+    m = ms[:, -1]
+    if physics is not None and physics.solver is not None:
+        return jax.vmap(model)(jax.vmap(physics.solver)(m, h), cond)
+    older = rearrange(ms[:, -2::-1], "B T F Lx Ly -> B (T F) Lx Ly")
+    x = with_coords(jnp.concatenate([m, older], axis=1), grid)
+    if physics is not None and physics.demag is not None:
+        x = jnp.concatenate([x, jax.vmap(physics.demag)(m)], axis=1)
+    return jax.vmap(model)(x, cond)
+
+
+def advance(ms, m):
+    """Slide the frame window: drop the oldest of ms (B, n_in, ...), append m."""
+    return jnp.concatenate([ms[:, 1:], m[:, None]], axis=1)
 
 
 @eqx.filter_jit
-def predict(model, m0, cond):
-    """One step for a batch: (B, 5, Lx, Ly), (B, 3) -> (B, 3, Lx, Ly)."""
-    return jax.vmap(model)(m0, cond)
+def predict(model, ms, cond, grid, h, physics=None):
+    """`model_step`, jitted."""
+    return model_step(model, ms, cond, grid, h, physics)
 
 
 @eqx.filter_jit
-def rollout(model, x, cond, grid, n_steps: int):
-    """Autoregressively predict n_steps frames from one frame.
+def rollout(model, x, cond, grid, n_steps: int, h=None, physics=None):
+    """Autoregressively predict n_steps frames after the context frames x.
 
-    x: (B, 1, Lx, Ly, F), as WellDataset serves input_fields.
+    x: (B, n_in, Lx, Ly, F), as WellDataset serves input_fields, oldest first.
     cond: (B, 3), as `conditioning` returns it.
     grid: (B, Lx, Ly, 2), as WellDataset serves space_grid.
+    h, physics: the applied field (B, 3) in A/m and the mesh's `physics.MeshPhysics`
+    (`model_step`).
     returns: (B, n_steps, Lx, Ly, F), same layout as output_fields.
     """
-    m0 = rearrange(x, "B 1 Lx Ly F -> B F Lx Ly")
+    ms0 = rearrange(x, "B T Lx Ly F -> B T F Lx Ly")
 
-    def step(m, _):
-        m = jax.vmap(model)(with_coords(m, grid), cond)
-        return m, m
+    def step(ms, _):
+        m = model_step(model, ms, cond, grid, h, physics)
+        return advance(ms, m), m
 
-    _, frames = jax.lax.scan(step, m0, None, length=n_steps)
+    _, frames = jax.lax.scan(step, ms0, None, length=n_steps)
     return rearrange(frames, "T B F Lx Ly -> B T Lx Ly F")
 
 
-def one_step_preds(model, loader):
+def one_step_preds(model, loader, physics=None):
     """Teacher-forced one-step predictions over a whole loader.
 
     returns: (pred, truth), both (N, 1, Lx, Ly, F) numpy -- the layout the
@@ -116,9 +151,9 @@ def one_step_preds(model, loader):
     """
     preds, truths = [], []
     for batch in tqdm(loader, mininterval=10):
-        m0, m1, cond = prepare_batch(batch)
-        preds.append(np.asarray(predict(model, m0, cond)))
-        truths.append(m1)
+        ms, targets, cond, grid, h = prepare_batch(batch)
+        preds.append(np.asarray(predict(model, ms, cond, grid, h, physics)))
+        truths.append(targets[:, 0])
 
     pattern = "B F Lx Ly -> B 1 Lx Ly F"
     return (
@@ -137,13 +172,36 @@ def device_info():
 
 
 @eqx.filter_jit
-def loss_fn(model, m0, m1, cond):
-    return jnp.mean(jnp.square(jax.vmap(model)(m0, cond) - m1))
+def loss_fn(model, ms, targets, cond, grid, h, physics=None):
+    """Mean squared error over an autoregressive unroll of `targets.shape[1]` steps
+    after the context frames ms, each step fed the previous predictions (one step:
+    plain one-step loss). With a solver, gradients flow back through it: the
+    solver-in-the-loop loss."""
+
+    if targets.shape[1] == 1:
+        # one step: no scan, whose stacked residuals keep every intermediate of the
+        # step alive (~16 GiB more at 32 x 256^2 than XLA's own fused schedule)
+        m = model_step(model, ms, cond, grid, h, physics)
+        return jnp.mean(jnp.square(m - targets[:, 0]))
+
+    def step(ms, target):
+        m = model_step(model, ms, cond, grid, h, physics)
+        return advance(ms, m), jnp.mean(jnp.square(m - target))
+
+    # an unroll is rematerialised per step: backprop keeps only each step's input
+    # state instead of every step's solver and network activations (an 8-step unroll
+    # at 128^2 needs ~43 GiB without), at the cost of recomputing each step's forward
+    # pass
+    step = jax.checkpoint(step)
+
+    _, losses = jax.lax.scan(step, ms, jnp.moveaxis(targets, 1, 0))
+    return jnp.mean(losses)
 
 
-@eqx.filter_jit(donate="all-except-first")
-def update_fn(model: eqx.Module, batch: PyTree, optimizer, opt_state):
-    loss, grad = eqx.filter_value_and_grad(loss_fn)(model, *batch)
+# no donation: the physics' demag tensors are reused across steps
+@eqx.filter_jit
+def update_fn(model: eqx.Module, batch: PyTree, optimizer, opt_state, physics=None):
+    loss, grad = eqx.filter_value_and_grad(loss_fn)(model, *batch, physics)
     updates, opt_state = optimizer.update(grad, opt_state, model)
     model = eqx.apply_updates(model, updates)
     return model, opt_state, loss
