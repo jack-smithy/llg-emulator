@@ -1,51 +1,23 @@
 #!/bin/bash
 #
+# One recipe, one seed per array task, then its validation scores:
+#   sbatch --array=0-1 scripts/train.slrm configs/closure.yaml
+# 20k-step recipes need about 12 h on a slice: add -t 16:00:00.
+#
 #SBATCH -J train
-#SBATCH --time="4:00:00"
+#SBATCH --time="12:00:00"
 #SBATCH --gres=gpu:1g.24gb:1
-#SBATCH -o logs/%x-%j.out
-
-
-export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
+#SBATCH -c 4
+#SBATCH --array=0
+#SBATCH -o logs/%x-%A_%a.out
 
 set -euo pipefail
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.95
 
-DATASET="llg_field_switching"
-CONFIGURATION="full-3"
-LEARNING_RATE=1e-3
-BATCH_SIZE=128
-NUM_STEPS=10000
-VAL_EVERY=1000
-HIDDEN_CHANNELS=64
-NUM_BLOCKS=2
-POOL_FACTORS="1 2 4"  # integer cell-size multiples, one drawn per batch
-SEED=2
+CONFIG=$1
+RUN="$(basename "$CONFIG" .yaml)/seed_$SLURM_ARRAY_TASK_ID"
+echo "$RUN on $SLURM_NODELIST, $(date)"
 
-echo "Job started on $(date)"
-echo "Running on node(s): $SLURM_NODELIST"
-
-echo "Dataset: $DATASET"
-echo "Training configuration: $CONFIGURATION"
-echo "Learning rate=$LEARNING_RATE, Batch size=$BATCH_SIZE, Steps=$NUM_STEPS, val every $VAL_EVERY"
-echo "Model: hidden channels=$HIDDEN_CHANNELS, blocks=$NUM_BLOCKS, pool factors=$POOL_FACTORS"
-
-uv run python -c "import utils; utils.device_info()"
-
-uv run main.py \
-    --seed $SEED \
-    --configuration $CONFIGURATION \
-    --dataset $DATASET \
-    --learning-rate $LEARNING_RATE \
-    --batch-size $BATCH_SIZE \
-    --num-steps $NUM_STEPS \
-    --val-every $VAL_EVERY \
-    --hidden-channels $HIDDEN_CHANNELS \
-    --num-blocks $NUM_BLOCKS \
-    --pool-factors $POOL_FACTORS
-
-echo "Model Finished Training"
-
-uv run eval.py \
-    --seed $SEED \
-    --dataset $DATASET \
-    --configuration $CONFIGURATION
+uv run train.py "$CONFIG" --seed "$SLURM_ARRAY_TASK_ID"
+uv run evaluate.py validate --runs "$RUN"
+uv run evaluate.py rollouts --runs "$RUN" --films valid256
