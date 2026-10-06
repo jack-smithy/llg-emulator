@@ -53,6 +53,7 @@ from tqdm import tqdm
 from datagen.generate_geometries import GEOMETRIES
 from datagen.generate_varied_field import DX
 from model import load_config, load_model
+from paths import RESULTS
 from physics import mesh_physics
 from plot import plot_rollout, plot_rollout_mse
 from utils import conditioning, numpy_collate, predict, prepare_batch, rollout
@@ -173,7 +174,7 @@ def rollouts(model, root, filters, config):
 
 def main(seed, configuration, dataset, batch_size, geometries):
     data_root = Path("datasets") / dataset
-    results_path = Path("results-v2") / dataset / configuration / f"seed_{seed}"
+    results_path = RESULTS / dataset / configuration / f"seed_{seed}"
     out = results_path / "geometries"
     out.mkdir(exist_ok=True)
 

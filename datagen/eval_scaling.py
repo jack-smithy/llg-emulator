@@ -2,7 +2,7 @@
 micromagnetics run directly at the coarse cell size — the thing the emulator is for.
 
 Runs in the project env, from the repo root, in stages that share a cache under
-`results-v2/<dataset>/scaling/`:
+`results-v2/<dataset>/scaling/` (`paths.RESULTS`: another root via `RESULTS_ROOT`):
 
     uv run python -m datagen.eval_scaling truth
     uv run python -m datagen.eval_scaling baseline
@@ -46,6 +46,7 @@ import h5py
 import numpy as np
 
 from datagen.generate_varied_field import DT, DX, MATERIAL
+from paths import RESULTS
 
 FIELDS = ("mx", "my", "mz")
 N_STEPS = 100  # the whole 1 ns trajectory after the first frame
@@ -65,11 +66,14 @@ FILMS = {
     "sq512": ([TEST / "llg_test_sq512.hdf5"], (2, 4, 8, 16, 32)),
     "sq1024": ([TEST / "llg_test_sq1024.hdf5"], (2, 4, 8, 16, 32)),
     "large": ([TEST / "llg_test_large6144.hdf5"], (4, 8, 16, 32, 64)),
+    # the validation split's 256^2 films: rollout scores to select models on without
+    # touching the test films
+    "valid256": (sorted((DATA / "data/valid").glob("llg_valid_[0-9]*.hdf5")), (1, 2, 4, 8, 16)),
 }
 
 
 def cache_dir(dataset):
-    return Path("results-v2") / dataset / "scaling"
+    return RESULTS / dataset / "scaling"
 
 
 def run_dir(cache, run):
@@ -358,7 +362,7 @@ def stage_model(cache, films, runs, dataset, speed=True):
 
     jax.config.update("jax_compilation_cache_dir", ".jax_cache")
     for run in runs:
-        path = Path("results-v2") / dataset / run
+        path = RESULTS / dataset / run
         model = eqx.nn.inference_mode(load_model(path, jr.PRNGKey(0), "model"))
         config = load_config(path)
         # a multi-frame model starts from the first n_in true frames
@@ -528,7 +532,7 @@ def stage_demo(cache, runs, dataset, side_um=1000.0, cell_nm=320.0):
     )
     cond = conditioning(scalars, grid)
     for run in runs:
-        path = Path("results-v2") / dataset / run
+        path = RESULTS / dataset / run
         model = eqx.nn.inference_mode(load_model(path, jr.PRNGKey(0), "model"))
         halo = receptive_radius(model)
         config = load_config(path)

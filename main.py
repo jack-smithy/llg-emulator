@@ -16,6 +16,7 @@ from tqdm import tqdm
 
 from datagen.generate_varied_field import DX
 from model import ModelConfig, build_model, load_config, save_model
+from paths import RESULTS
 from physics import mesh_physics
 from utils import SCALARS, numpy_collate, prepare_batch, loss_fn, update_fn
 
@@ -61,7 +62,7 @@ if args.augment and not (args.closure or args.solver_in_the_loop):
 
 path = f"datasets/{args.dataset}"
 results_path = (
-    Path("results-v2") / args.dataset / args.configuration / f"seed_{args.seed}"
+    RESULTS / args.dataset / args.configuration / f"seed_{args.seed}"
 )
 # never train one kind of model over a run of another kind: pick another
 # --configuration (overwriting a run of the same kind is fine)
@@ -109,6 +110,7 @@ stats["config"] = {
     "zero_init": args.zero_init,
     "seed": args.seed,
     "configuration": args.configuration,
+    "results_root": str(RESULTS),
 }
 with open(f"{results_path}/stats.json", "w+") as f:
     json.dump(stats, f)

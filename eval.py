@@ -13,6 +13,7 @@ from the_well.data import WellDataset
 
 from datagen.generate_varied_field import DX
 from model import load_config, load_model
+from paths import RESULTS
 from physics import mesh_physics
 from plot import animate_channels, plot_learning_curves, plot_norms, plot_rollout
 from utils import (
@@ -33,7 +34,7 @@ ROLLOUT_IDX = 7
 
 def main(seed, configuration, dataset):
     path = f"datasets/{dataset}"
-    results_path = Path("results-v2") / dataset / configuration / f"seed_{seed}"
+    results_path = RESULTS / dataset / configuration / f"seed_{seed}"
 
     with open(results_path / "stats.json", "r") as f:
         stats = json.load(f)
