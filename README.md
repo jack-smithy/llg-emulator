@@ -10,20 +10,19 @@ magnum.np run directly on the coarse mesh. Built with JAX, Equinox, neuralmag an
 ## Layout
 
 ```
-llg/            the shared library
-  constants.py    material, cell size, time step, result paths
-  films.py        the evaluation films and where their files live
-  physics.py      exchange and demag fields, the LLG stepper, rollouts
-  model.py        the closure model; building, saving and loading it
-  data.py         the_well loaders, batches, coarse-graining, D4 augmentation
-  metrics.py      MSE, VRMSE, cosine similarity, hysteresis-loop metrics
-  plotting.py     the figures
-  magnum.py       magnum.np initial states, relaxation and simulation
-configs/        training recipes
-train.py        train one recipe for one seed
-evaluate.py     validation, rollouts against magnum.np, hysteresis loops, report, animations
-generate.py     the training set and the held-out films
-scripts/        Slurm wrappers of the three entry points
+llg/              the physics
+  constants.py      material, cell size, time step
+  physics.py        exchange and demag fields, the LLG stepper, rollouts
+  magnum.py         magnum.np initial states, relaxation and simulation
+model.py          the closure model; building, saving and loading it
+data.py           datasets, films and result paths; loaders, coarse-graining, D4 augmentation
+metrics.py        MSE, VRMSE, cosine similarity, hysteresis-loop metrics
+plotting.py       the figures
+configs/          training recipes
+train.py          train one recipe for one seed
+evaluate.py       validation, rollouts against magnum.np, hysteresis loops, report, animations
+generate.py       the training set and the held-out films
+scripts/          Slurm wrappers of the three entry points
 ```
 
 Every stepper, the LLG solver and the model alike, maps `(m, h) -> m'` on one film
@@ -69,4 +68,4 @@ sbatch -t 16:00:00 scripts/generate.slrm film --film sq1024 --out datasets/llg_f
 ```
 
 The held-out films are extra files in the dataset's `test` split. The Well loads one
-resolution at a time, so `films.FILMS` names each film's file pattern.
+resolution at a time, so `data.FILMS` names each film's file pattern.

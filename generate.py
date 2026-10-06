@@ -17,8 +17,8 @@ import numpy as np
 import torch
 from jaxtyping import Float
 
-from llg.constants import DT, DX, FIELDS, MATERIAL, MU_0, N_STEPS, SCALARS
-from llg.films import FILMS
+from data import FIELDS, FILMS, N_STEPS, SCALARS
+from llg.constants import DT, DX, MATERIAL, MU_0
 from llg.magnum import random_state, relax, s_state, simulate, uniform_state
 
 H_MAX = 50e-3  # T, per in-plane component

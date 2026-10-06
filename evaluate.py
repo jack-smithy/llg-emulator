@@ -20,12 +20,23 @@ import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Float
 
-from llg import metrics, plotting
-from llg.constants import DT, DX, MU_0, N_STEPS, RESULTS, cache_dir, coarse_dx, run_dir
-from llg.data import coarse_grain, read_trajectories, to_batch, well_loader
-from llg.films import FILMS, Film
-from llg.model import load_model
+import metrics
+import plotting
+from data import (
+    FILMS,
+    N_STEPS,
+    RESULTS,
+    Film,
+    cache_dir,
+    coarse_grain,
+    read_trajectories,
+    run_dir,
+    to_batch,
+    well_loader,
+)
+from llg.constants import DT, DX, MU_0, coarse_dx
 from llg.physics import llg_solver, rollout, rollout_batch
+from model import load_model
 
 CELL_NM = DX[0] * 1e9
 HYSTERESIS_CELLS = (5, 10, 20, 40, 80)

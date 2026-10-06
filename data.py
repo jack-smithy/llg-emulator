@@ -1,4 +1,6 @@
+import os
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
 
@@ -11,7 +13,48 @@ from jaxtyping import Array, Float
 from the_well.data import WellDataset
 from torch.utils.data import DataLoader, default_collate
 
-from llg.constants import DATASETS, FIELDS, SCALARS
+N_STEPS = 100  # frames after the initial one in every trajectory (1 ns)
+FIELDS = ("mx", "my", "mz")
+SCALARS = ("Ms", "A", "alpha", "Hx", "Hy", "Hz")  # order of `constant_scalars`
+
+DATASETS = Path("datasets")
+RESULTS = Path(os.environ.get("RESULTS_ROOT", "results-v2"))
+
+
+def run_dir(dataset: str, run: str) -> Path:
+    return RESULTS / dataset / run
+
+
+def cache_dir(dataset: str) -> Path:
+    return RESULTS / dataset / "scaling"
+
+
+@dataclass(frozen=True)
+class Film:
+    cells: int  # 5 nm cells per side; every film is square
+    split: str
+    pattern: str  # file glob in data/<split>
+    factors: tuple[int, ...]  # coarse-graining factors it is evaluated at
+    sp4: bool = False  # one trajectory from SP4's s-state under SP4 field 1
+
+    @property
+    def side_um(self) -> float:
+        return self.cells * 5e-3
+
+    def files(self, dataset: str) -> list[Path]:
+        return sorted((DATASETS / dataset / "data" / self.split).glob(self.pattern))
+
+
+FILMS = {
+    "sq64": Film(64, "test", "llg_test_sq64.hdf5", (1, 2, 4)),
+    "sq128": Film(128, "test", "llg_test_sq128.hdf5", (1, 2, 4, 8)),
+    "sq256": Film(256, "test", "llg_test_[0-9]*.hdf5", (1, 2, 4, 8, 16)),
+    "sq512": Film(512, "test", "llg_test_sq512.hdf5", (2, 4, 8, 16, 32)),
+    "sq1024": Film(1024, "test", "llg_test_sq1024.hdf5", (2, 4, 8, 16, 32)),
+    "large": Film(6144, "test", "llg_test_large6144.hdf5", (4, 8, 16, 32, 64), sp4=True),
+    # the validation shards: rollout scores for model selection
+    "valid256": Film(256, "valid", "llg_valid_[0-9]*.hdf5", (1, 2, 4, 8, 16)),
+}
 
 
 class Batch(NamedTuple):

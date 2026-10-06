@@ -18,10 +18,10 @@ import yaml
 from jaxtyping import Array, Float
 from tqdm import tqdm
 
-from llg.constants import coarse_dx, run_dir
-from llg.data import Batch, prepare, to_batch, well_loader
-from llg.model import ClosureEmulator, ModelConfig, build_model, save_model
+from data import Batch, prepare, run_dir, to_batch, well_loader
+from llg.constants import coarse_dx
 from llg.physics import LLGStepper, llg_solver, rollout_batch
+from model import ClosureEmulator, ModelConfig, build_model, save_model
 
 jax.config.update("jax_compilation_cache_dir", ".jax_cache")
 
