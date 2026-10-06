@@ -51,6 +51,7 @@ FILM_UM = {  # film side in um, 5 nm cells
     "sq512": 2.56,
     "sq1024": 5.12,
     "large": 30.72,
+    "valid256": 1.28,
 }
 
 

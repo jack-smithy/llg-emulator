@@ -2,7 +2,7 @@
 micromagnetics run directly at the coarse cell size — the thing the emulator is for.
 
 Runs in the project env, from the repo root, in stages that share a cache under
-`results-v2/<dataset>/scaling/`:
+`results-v2/<dataset>/scaling/` (`paths.RESULTS`: another root via `RESULTS_ROOT`):
 
     uv run python -m datagen.eval_scaling truth
     uv run python -m datagen.eval_scaling baseline
@@ -46,6 +46,7 @@ import h5py
 import numpy as np
 
 from datagen.generate_varied_field import DT, DX, MATERIAL
+from paths import RESULTS
 
 FIELDS = ("mx", "my", "mz")
 N_STEPS = 100  # the whole 1 ns trajectory after the first frame
@@ -65,11 +66,17 @@ FILMS = {
     "sq512": ([TEST / "llg_test_sq512.hdf5"], (2, 4, 8, 16, 32)),
     "sq1024": ([TEST / "llg_test_sq1024.hdf5"], (2, 4, 8, 16, 32)),
     "large": ([TEST / "llg_test_large6144.hdf5"], (4, 8, 16, 32, 64)),
+    # the validation split's 256^2 films: rollout scores to select models on without
+    # touching the test films
+    "valid256": (
+        sorted((DATA / "data/valid").glob("llg_valid_[0-9]*.hdf5")),
+        (1, 2, 4, 8, 16),
+    ),
 }
 
 
 def cache_dir(dataset):
-    return Path("results-v2") / dataset / "scaling"
+    return RESULTS / dataset / "scaling"
 
 
 def run_dir(cache, run):
@@ -358,7 +365,7 @@ def stage_model(cache, films, runs, dataset, speed=True):
 
     jax.config.update("jax_compilation_cache_dir", ".jax_cache")
     for run in runs:
-        path = Path("results-v2") / dataset / run
+        path = RESULTS / dataset / run
         model = eqx.nn.inference_mode(load_model(path, jr.PRNGKey(0), "model"))
         config = load_config(path)
         # a multi-frame model starts from the first n_in true frames
@@ -427,37 +434,32 @@ def stage_model(cache, films, runs, dataset, speed=True):
 
 
 def tiled_network(model, x, cond, halo, tile=1024):
-    """`model.ResidualEmulator` applied tile by tile, for meshes whose activations do
-    not fit one device: each tile is computed with `halo` extra cells on every side
-    (at least the network's receptive radius, `RF_PER_BLOCK * num_blocks`) and
-    cropped, so for the strictly local network (no GroupNorm) the result equals the
-    whole-mesh one.
+    """The model's network applied tile by tile, for meshes whose activations do not
+    fit one device: each tile is computed with `halo` extra cells on every side (at
+    least the network's receptive radius, `model.receptive_radius`) and cropped, so
+    for the strictly local network (no GroupNorm) the result equals the whole-mesh
+    one.
 
-    x: (5, nx, ny) as `utils.with_coords` assembles one sample, or the coarse step
-    P(m) (3, nx, ny) for a solver-in-the-loop model; cond: (3,).
+    x: (C, nx, ny), one sample's network input (`utils.with_coords`, the coarse step
+    P(m) of a solver-in-the-loop model, or `ClosureEmulator.features`); cond: (3,).
+    returns: the network's output (3, nx, ny).
     """
     import equinox as eqx
     import jax.numpy as jnp
 
     net = eqx.filter_jit(lambda model, x, c: model.network(x, meta_data=c))
     _, nx, ny = x.shape
-    dm = jnp.zeros((3, nx, ny), x.dtype)
+    out = jnp.zeros((3, nx, ny), x.dtype)
     for i0 in range(0, nx, tile):
         for j0 in range(0, ny, tile):
             a0, b0 = max(0, i0 - halo), max(0, j0 - halo)
             a1, b1 = min(nx, i0 + tile + halo), min(ny, j0 + tile + halo)
             y = net(model, x[:, a0:a1, b0:b1], cond)
             ti, tj = min(tile, nx - i0), min(tile, ny - j0)
-            dm = dm.at[:, i0 : i0 + ti, j0 : j0 + tj].set(
+            out = out.at[:, i0 : i0 + ti, j0 : j0 + tj].set(
                 y[:, i0 - a0 : i0 - a0 + ti, j0 - b0 : j0 - b0 + tj]
             )
-    m1 = x[:3] + dm
-    return m1 / jnp.linalg.norm(m1, axis=0, keepdims=True)
-
-
-# each DilatedResNet block's kernel-3 convolutions at dilations 1, 2, 4, 8, 4, 2, 1
-# reach 22 cells; the lifting and projection are 1x1
-RF_PER_BLOCK = 22
+    return out
 
 
 def stage_demo(cache, runs, dataset, side_um=1000.0, cell_nm=320.0):
@@ -476,7 +478,7 @@ def stage_demo(cache, runs, dataset, side_um=1000.0, cell_nm=320.0):
     import jax.numpy as jnp
     import jax.random as jr
 
-    from model import load_config, load_model
+    from model import load_config, load_model, receptive_radius
     from physics import LLGStepper, demag_cache
     from utils import conditioning, with_coords
 
@@ -533,10 +535,9 @@ def stage_demo(cache, runs, dataset, side_um=1000.0, cell_nm=320.0):
     )
     cond = conditioning(scalars, grid)
     for run in runs:
-        path = Path("results-v2") / dataset / run
+        path = RESULTS / dataset / run
         model = eqx.nn.inference_mode(load_model(path, jr.PRNGKey(0), "model"))
-        meta = json.loads((path / "metadata.json").read_text())
-        halo = RF_PER_BLOCK * meta["num_blocks"]
+        halo = receptive_radius(model)
         config = load_config(path)
         if config.in_frames > 1:
             # the demo film starts from one relaxed state: no frame history to give
@@ -544,6 +545,12 @@ def stage_demo(cache, runs, dataset, side_um=1000.0, cell_nm=320.0):
             continue
 
         def step_model(m, model=model, halo=halo, config=config):
+            if config.closure:  # the solver under the network's closure field
+                x, meta = model.features(m, cond[0], solver)
+                h_theta = (
+                    model.eps(cond[0]) * solver.Ms * tiled_network(model, x, meta, halo)
+                )
+                return step_solver(solver, m, hj[:, None, None] + h_theta)
             if config.solver_in_the_loop:  # the network corrects the coarse step P(m)
                 x = step_solver(solver, m, hj)
             else:
@@ -552,7 +559,8 @@ def stage_demo(cache, runs, dataset, side_um=1000.0, cell_nm=320.0):
                     if not demag_mesh:
                         demag_mesh.append(demag_cache((n, n), dx))
                     x = jnp.concatenate([x, demag_field(demag_mesh[0], m)])
-            return tiled_network(model, x, cond[0], halo)
+            m1 = x[:3] + tiled_network(model, x, cond[0], halo)
+            return m1 / jnp.linalg.norm(m1, axis=0, keepdims=True)
 
         run_out = dict(out)
         record(run_out, run.replace("/", "__"), step_model)

@@ -8,6 +8,8 @@ from jaxtyping import PyTree
 from torch.utils.data import default_collate
 from tqdm import tqdm
 
+from model import ClosureEmulator
+
 # `batch["constant_scalars"]` in the order the generator writes them
 # (datagen.generate_varied_field.create_split); main.py checks the dataset agrees.
 SCALARS = ("Ms", "A", "alpha", "Hx", "Hy", "Hz")
@@ -67,9 +69,35 @@ def downsample(m, grid, factor: int):
     return m / jnp.linalg.norm(m, axis=1, keepdims=True), grid
 
 
-def prepare_batch(batch, pool: int = 1):
+def d4(fields, scalars, g: int):
+    """Element `g` (0..7) of the square film's symmetry group applied to a batch:
+    rotate the grid by 90 degrees g % 4 times, then for g >= 4 mirror it in x.
+
+    fields: (B, T, Lx, Ly, 3) frames of m as WellDataset serves them, Lx == Ly;
+    scalars: (B, 6) `constant_scalars`, whose Hx, Hy, Hz turn with the film.
+    m and H are axial vectors: a rotation turns their in-plane components with the
+    grid; the mirror x -> -x keeps m_x and flips m_y, m_z. Exchange, demag and the
+    LLG are invariant under all eight, so a transformed trajectory is another
+    trajectory of the same dynamics -- for models without coordinate inputs, whose
+    grid is left as it is.
+    """
+    k = g % 4
+    fields = np.rot90(fields, k, axes=(2, 3))  # axis 2 towards 3: x -> y, +90 degrees
+    c, s = ((1, 0), (0, 1), (-1, 0), (0, -1))[k]
+    scalars = np.array(scalars, copy=True)
+    x, y = fields[..., 0], fields[..., 1]
+    fields = np.stack([c * x - s * y, s * x + c * y, fields[..., 2]], axis=-1)
+    hx, hy = scalars[:, 3], scalars[:, 4]
+    scalars[:, 3], scalars[:, 4] = c * hx - s * hy, s * hx + c * hy
+    if g >= 4:
+        fields = fields[:, :, ::-1] * np.array([1.0, -1.0, -1.0], fields.dtype)
+        scalars[:, 4:6] *= -1
+    return fields, scalars
+
+
+def prepare_batch(batch, pool: int = 1, augment: int | None = None):
     """Batch -> `(ms, targets, cond, grid, h)` in the model's layout, coarse-grained by
-    `pool` first.
+    `pool` first and, with `augment`, transformed by that element of `d4`.
 
     ms: (B, n_in, 3, Lx, Ly), the input frames, oldest first (n_in = the model's
     `in_frames`); targets: (B, T, 3, Lx, Ly), the T frames after them (T = 1 for
@@ -77,6 +105,14 @@ def prepare_batch(batch, pool: int = 1):
     cell centres; h: (B, 3) applied field in A/m, what a solver takes.
     """
     grid0 = batch["space_grid"]
+    inputs, outputs, scalars = (
+        batch["input_fields"],
+        batch["output_fields"],
+        batch["constant_scalars"],
+    )
+    if augment is not None:
+        inputs, scalars = d4(inputs, scalars, augment)
+        outputs, _ = d4(outputs, batch["constant_scalars"], augment)
 
     def frames(x):  # (B, T, Lx, Ly, F) -> (B, T, F, Lx', Ly') on the pooled mesh
         T = x.shape[1]
@@ -84,9 +120,8 @@ def prepare_batch(batch, pool: int = 1):
         x, grid = downsample(x, np.repeat(grid0, T, axis=0), pool)
         return rearrange(x, "(B T) F Lx Ly -> B T F Lx Ly", T=T), grid[::T]
 
-    ms, grid = frames(batch["input_fields"])
-    targets, _ = frames(batch["output_fields"])
-    scalars = batch["constant_scalars"]
+    ms, grid = frames(inputs)
+    targets, _ = frames(outputs)
     return ms, targets, conditioning(scalars, grid), grid, scalars[:, 3:6]
 
 
@@ -94,15 +129,19 @@ def model_step(model, ms, cond, grid, h, physics=None):
     """One emulator step for a batch: frames ms (B, n_in, 3, Lx, Ly), oldest first ->
     the next frame (B, 3, Lx, Ly).
 
-    `physics` is the `physics.MeshPhysics` of this mesh. With its `solver` this is
-    solver-in-the-loop (Um et al. 2020): the coarse solver steps the latest frame under
-    the applied field h (B, 3) and the network corrects its output, m' = P(m) + C(P(m))
-    (`model.ResidualEmulator` adds C to its input's first 3 channels). Otherwise the
-    network sees the latest frame first, the older ones newest first, the cell
-    coordinates and, with `physics.demag`, the latest frame's demag field.
+    `physics` is the `physics.MeshPhysics` of this mesh. With its `solver`, a
+    `model.ClosureEmulator` steps that solver under its closure field; any other model
+    is solver-in-the-loop (Um et al. 2020): the coarse solver steps the latest frame
+    under the applied field h (B, 3) and the network corrects its output,
+    m' = P(m) + C(P(m)) (`model.ResidualEmulator` adds C to its input's first 3
+    channels). Otherwise the network sees the latest frame first, the older ones
+    newest first, the cell coordinates and, with `physics.demag`, the latest frame's
+    demag field.
     """
     m = ms[:, -1]
     if physics is not None and physics.solver is not None:
+        if isinstance(model, ClosureEmulator):
+            return jax.vmap(lambda m, c, h: model(m, c, h, physics.solver))(m, cond, h)
         return jax.vmap(model)(jax.vmap(physics.solver)(m, h), cond)
     older = rearrange(ms[:, -2::-1], "B T F Lx Ly -> B (T F) Lx Ly")
     x = with_coords(jnp.concatenate([m, older], axis=1), grid)

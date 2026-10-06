@@ -278,8 +278,9 @@ def stepper_cache(n: tuple, dx: tuple) -> LLGStepper:
 
 class MeshPhysics(eqx.Module):
     """What a model needs from physics on one mesh, passed alongside it: the coarse
-    solver for a solver-in-the-loop model, the (nondimensional) demag field module for
-    a `use_demag` one; either is None when the model does not use it."""
+    solver for a solver-in-the-loop or closure model, the (nondimensional) demag
+    field module for a `use_demag` one; either is None when the model does not use
+    it."""
 
     solver: LLGStepper | None = None
     demag: DemagField | None = None
@@ -289,6 +290,6 @@ def mesh_physics(config, n: tuple, dx: tuple) -> MeshPhysics:
     """`MeshPhysics` for a `model.ModelConfig` on the mesh of `n` cells of `dx`."""
     n, dx = tuple(int(x) for x in n), tuple(float(x) for x in dx)
     return MeshPhysics(
-        stepper_cache(n, dx) if config.solver_in_the_loop else None,
+        stepper_cache(n, dx) if config.solver_in_the_loop or config.closure else None,
         demag_cache(n, dx) if config.use_demag else None,
     )
