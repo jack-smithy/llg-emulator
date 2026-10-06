@@ -1,0 +1,19 @@
+#!/bin/bash
+#
+# Any GPU stage of evaluate.py, arguments passed through:
+#   sbatch scripts/evaluate.slrm rollouts --runs k1-long/seed_0 --films sq256 sq512 large
+#   sbatch scripts/evaluate.slrm hysteresis --runs k1-long/seed_0 --films sq256
+# The truth stage reads the 31 GB large film and needs no GPU:
+#   sbatch -c 4 -t 2:00:00 --wrap "uv run evaluate.py truth --films sq256 valid256 large"
+#
+#SBATCH -J evaluate
+#SBATCH --time="4:00:00"
+#SBATCH --gres=gpu:1g.24gb:1
+#SBATCH -c 4
+#SBATCH -o logs/%x-%j.out
+
+set -euo pipefail
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
+
+echo "evaluate.py $* on $SLURM_NODELIST, $(date)"
+uv run evaluate.py "$@"
