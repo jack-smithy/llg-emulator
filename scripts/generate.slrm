@@ -1,0 +1,20 @@
+#!/bin/bash
+#
+# generate.py with its arguments passed through; an array job shards the training set:
+#   sbatch --array=0-7 scripts/generate.slrm train --out datasets/llg_field_switching
+#   sbatch -t 16:00:00 scripts/generate.slrm film --film sq1024 --out datasets/llg_field_switching
+#   sbatch -t 12:00:00 --gres=gpu:full:1 scripts/generate.slrm film --film large --out datasets/llg_field_switching
+#
+#SBATCH -J generate
+#SBATCH --time="4:00:00"
+#SBATCH --gres=gpu:1g.24gb:1
+#SBATCH --requeue
+#SBATCH -o logs/%x-%A_%a.out
+
+set -euo pipefail
+
+if [ -n "${SLURM_ARRAY_TASK_ID:-}" ]; then
+    set -- "$@" --shard "$SLURM_ARRAY_TASK_ID" --n-shards "$SLURM_ARRAY_TASK_COUNT"
+fi
+echo "generate.py $* on $SLURM_NODELIST, $(date)"
+uv run generate.py "$@"
