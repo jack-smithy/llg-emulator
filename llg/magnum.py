@@ -59,7 +59,7 @@ def relax(m0: torch.Tensor, dx: tuple[float, ...]) -> Field:
     """Relaxed at zero field (magnum.np's relax runs at alpha = 1)."""
     state = make_state(m0, dx)
     LLGSolver([DemagField(), ExchangeField()]).relax(state)
-    return to_numpy(normalize(state.m))
+    return to_numpy(normalize(state.m))  # type: ignore
 
 
 def simulate(
@@ -70,7 +70,7 @@ def simulate(
     llg = LLGSolver([DemagField(), ExchangeField(), ExternalField([float(x) for x in h])])
     for _ in range(n_steps):
         llg.step(state, DT)
-        yield to_numpy(state.m)
+        yield to_numpy(state.m)  # type: ignore
 
 
 def make_state(m0: Field | torch.Tensor, dx: tuple[float, ...]) -> State:
@@ -79,7 +79,7 @@ def make_state(m0: Field | torch.Tensor, dx: tuple[float, ...]) -> State:
         m0 = m0[:, :, None]
     state = State(Mesh(tuple(m0.shape[:3]), dx))
     state.material = dict(MATERIAL)
-    state.m = normalize(m0.to(torch.get_default_device()).clone())
+    state.m = normalize(m0.to(torch.get_default_device()).clone())  # type: ignore
     return state
 
 

@@ -60,10 +60,10 @@ def write_film(path: Path, samples: list[Sample], n: int):
                 flush=True,
             )
             for name, value in zip(SCALARS[3:], h):
-                f["scalars"][name][j] = value
+                f["scalars"][name][j] = value  # type: ignore
             for t, m in enumerate(frames):
                 for c, name in enumerate(FIELDS):
-                    f["t0_fields"][name][j, t] = m[..., c]
+                    f["t0_fields"][name][j, t] = m[..., c]  # type: ignore
     part.replace(path)
 
 

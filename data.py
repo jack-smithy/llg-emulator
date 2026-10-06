@@ -2,7 +2,7 @@ import os
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 import h5py
 import jax.numpy as jnp
@@ -19,6 +19,8 @@ SCALARS = ("Ms", "A", "alpha", "Hx", "Hy", "Hz")  # order of `constant_scalars`
 
 DATASETS = Path("datasets")
 RESULTS = Path(os.environ.get("RESULTS_ROOT", "results-v2"))
+
+type Split = Literal["train", "valid", "test"]
 
 
 def run_dir(dataset: str, run: str) -> Path:
@@ -63,7 +65,7 @@ class Batch(NamedTuple):
     h: Float[Array, "..."]  # (B, 3) applied field in A/m
 
 
-def well_dataset(dataset: str, split: str, n_steps: int) -> WellDataset:
+def well_dataset(dataset: str, split: Split, n_steps: int) -> WellDataset:
     data = WellDataset(
         path=str(DATASETS / dataset),
         well_split_name=split,
@@ -76,7 +78,7 @@ def well_dataset(dataset: str, split: str, n_steps: int) -> WellDataset:
 
 
 def well_loader(
-    dataset: str, split: str, n_steps: int, batch_size: int, seed: int = 0, shuffle: bool = False
+    dataset: str, split: Split, n_steps: int, batch_size: int, seed: int = 0, shuffle: bool = False
 ) -> DataLoader:
     return DataLoader(
         well_dataset(dataset, split, n_steps),
@@ -103,51 +105,48 @@ def to_batch(sample: dict) -> Batch:
 
 
 def coarse_grain(m: Float[Array, "..."], k: int) -> Float[Array, "..."]:
-    """Block mean onto k-times larger cells, back on the unit sphere; numpy or jax."""
+    """Block mean onto k-times larger cells, back on the unit sphere."""
+    m = jnp.asarray(m)
     if k == 1:
         return m
     *lead, nx, ny, _ = m.shape
     m = m.reshape(*lead, nx // k, k, ny // k, k, 3).mean(axis=(-4, -2))
-    return m / ((m**2).sum(axis=-1, keepdims=True) ** 0.5)
+    return m / jnp.linalg.norm(m, axis=-1, keepdims=True)
 
 
 def d4(m: Float[Array, "..."], h: Float[Array, "..."], g: int):
     """Element g of the square's symmetry group: g % 4 quarter turns, then for g >= 4 a
     mirror x -> -x. m and h are axial vectors, so the mirror flips their y and z."""
-    m = np.rot90(m, g % 4, axes=(-3, -2))
+    m = jnp.rot90(m, g % 4, axes=(-3, -2))
     c, s = ((1, 0), (0, 1), (-1, 0), (0, -1))[g % 4]
-    rotation = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]], m.dtype)
+    rotation = jnp.array([[c, -s, 0], [s, c, 0], [0, 0, 1]], m.dtype)
     m, h = m @ rotation.T, h @ rotation.T
     if g >= 4:
-        mirror = np.array([1, -1, -1], m.dtype)
+        mirror = jnp.array([1, -1, -1], m.dtype)
         m, h = m[..., ::-1, :, :] * mirror, h * mirror
     return m, h
 
 
 def prepare(batch: Batch, k: int, g: int | None = None) -> Batch:
     """On the device, augmented by d4 element g, then coarse-grained by k."""
-    m, targets, h = batch
+    m, targets, h = (jnp.asarray(x) for x in batch)
     if g is not None:
         m, h_aug = d4(m, h, g)
         targets, _ = d4(targets, h, g)
         h = h_aug
-    return Batch(
-        m=coarse_grain(jnp.asarray(m), k),
-        targets=coarse_grain(jnp.asarray(targets), k),
-        h=jnp.asarray(h),
-    )
+    return Batch(coarse_grain(m, k), coarse_grain(targets, k), h)
 
 
 def read_trajectories(
     paths: list[Path],
-) -> Iterator[tuple[Callable[[int], np.ndarray], np.ndarray]]:
+) -> Iterator[tuple[Callable[[int], Array], Array]]:
     """(frame reader, H) per trajectory; frames are read one at a time from disk."""
     for path in paths:
         with h5py.File(path) as f:
-            for j in range(f["t0_fields"]["mx"].shape[0]):
-                h = np.array([f["scalars"][name][j] for name in SCALARS[3:]])
+            for j in range(f["t0_fields"]["mx"].shape[0]):  # type: ignore
+                h = jnp.array([f["scalars"][name][j] for name in SCALARS[3:]])  # type: ignore
 
                 def read(t, f=f, j=j):
-                    return np.stack([f["t0_fields"][c][j, t] for c in FIELDS], axis=-1)
+                    return jnp.stack([f["t0_fields"][c][j, t] for c in FIELDS], axis=-1)  # type: ignore
 
                 yield read, h

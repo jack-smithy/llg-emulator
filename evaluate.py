@@ -10,6 +10,7 @@ uv run evaluate.py animate --runs closure/seed_0 --films sq512 --cells 10 20
 """
 
 import json
+import os
 from argparse import ArgumentParser
 from collections import defaultdict
 from pathlib import Path
@@ -18,7 +19,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jaxtyping import Float
+from jaxtyping import Array, Float
 
 import metrics
 import plotting
@@ -46,7 +47,7 @@ RAMP_MT_PER_NS = 2.5
 RELAX_STEPS = 200  # 2 ns at alpha = 1 before the sweep
 SWEEP_CHUNK = 400  # steps per jitted chunk of a hysteresis sweep
 
-Field = Float[np.ndarray, "..."]
+Field = Float[Array, "..."]
 
 
 def factors(film: Film, cells: list[float] | None) -> list[int]:
@@ -60,10 +61,10 @@ def load_truth(dataset: str, film: str, k: int) -> tuple[Field, Field, tuple[flo
     trajectory by up to 1e-2 MSE.
     """
     cache = cache_dir(dataset)
-    truth = np.load(cache / f"truth_{film}_k{k}.npy").astype(np.float32)
-    truth[:, 0] = np.load(cache / f"first_{film}_k{k}.npy")
+    truth = jnp.asarray(np.load(cache / f"truth_{film}_k{k}.npy"), jnp.float32)
+    truth = truth.at[:, 0].set(np.load(cache / f"first_{film}_k{k}.npy"))
     meta = json.loads((cache / f"truth_{film}_k{k}.json").read_text())
-    return truth, np.asarray(meta["H"], np.float32), tuple(meta["dx"])
+    return truth, jnp.asarray(meta["H"], jnp.float32), tuple(meta["dx"])
 
 
 def save_metrics(path: Path, pred: Field, truth: Field) -> dict[str, Field]:
@@ -77,14 +78,14 @@ def save_metrics(path: Path, pred: Field, truth: Field) -> dict[str, Field]:
 def validate(dataset: str, runs: list[str]):
     """One-step metrics on the validation split, and the learning curve."""
     loader = well_loader(dataset, "valid", n_steps=1, batch_size=16)
-    nx, ny = loader.dataset.metadata.spatial_resolution
+    nx, ny = loader.dataset.metadata.spatial_resolution  # type: ignore
     solver = llg_solver((nx, ny), DX)
     for run in runs:
         path = run_dir(dataset, run)
         step = eqx.Partial(load_model(path), solver=solver)
         batches = [to_batch(sample) for sample in loader]
-        pred = np.concatenate([rollout_batch(step, b.m, b.h, 1)[:, 0] for b in batches])
-        truth = np.concatenate([b.targets[:, 0] for b in batches])
+        pred = jnp.concatenate([rollout_batch(step, b.m, b.h, 1)[:, 0] for b in batches])
+        truth = jnp.concatenate([b.targets[:, 0] for b in batches])
         stats = json.loads((path / "stats.json").read_text())
         stats["metrics"] = {
             name: float(fn(pred, truth).mean()) for name, fn in metrics.METRICS.items()
@@ -108,15 +109,15 @@ def truth(dataset: str, films: list[str]):
                 frame = read(t)
                 for k in todo:
                     coarse = coarse_grain(frame, k)
-                    trajectory[k].append(coarse.astype(np.float16))
+                    trajectory[k].append(coarse.astype(jnp.float16))
                     if t == 0:
                         firsts[k].append(coarse)
             for k in todo:
-                frames[k].append(np.stack(trajectory[k]))
+                frames[k].append(jnp.stack(trajectory[k]))
             hs.append(h.tolist())
         for k in todo:
-            np.save(cache / f"truth_{name}_k{k}.npy", np.stack(frames[k]))
-            np.save(cache / f"first_{name}_k{k}.npy", np.stack(firsts[k]))
+            np.save(cache / f"truth_{name}_k{k}.npy", jnp.stack(frames[k]))
+            np.save(cache / f"first_{name}_k{k}.npy", jnp.stack(firsts[k]))
             meta = {"H": hs, "dx": coarse_dx(k), "fine_cells": [film.cells, film.cells]}
             (cache / f"truth_{name}_k{k}.json").write_text(json.dumps(meta))
             print(f"truth {name} k={k} done", flush=True)
@@ -131,12 +132,11 @@ def cases(films: list[str], cells: list[float] | None):
 def magnum_rollout(reference: Field, hs: Field, dx: tuple[float, ...]) -> Field:
     from llg.magnum import simulate
 
-    return np.stack(
-        [
-            np.stack([m.astype(np.float32) for m in simulate(m0, h, dx, N_STEPS)])
-            for m0, h in zip(reference[:, 0], hs)
-        ]
-    )
+    trajectories = [
+        jnp.stack([jnp.asarray(m, jnp.float32) for m in simulate(m0, h, dx, N_STEPS)])
+        for m0, h in zip(np.asarray(reference[:, 0]), np.asarray(hs))
+    ]
+    return jnp.stack(trajectories)
 
 
 def model_rollout(model, reference: Field, hs: Field, dx: tuple[float, ...]) -> Field:
@@ -145,14 +145,16 @@ def model_rollout(model, reference: Field, hs: Field, dx: tuple[float, ...]) -> 
     step = eqx.Partial(model, solver=llg_solver((nx, ny), dx))
     size = max(1, 8 * 256**2 // (nx * ny))
     chunks = [
-        rollout_batch(step, reference[i : i + size, 0], hs[i : i + size], N_STEPS)
+        rollout_batch(step, reference[i : i + size, 0], hs[i : i + size], N_STEPS)  # type: ignore
         for i in range(0, n_traj, size)
     ]
-    return np.concatenate([np.asarray(chunk) for chunk in chunks])
+    return jnp.concatenate(chunks)
 
 
 def baseline(dataset: str, films: list[str], cells: list[float] | None):
     """magnum.np run directly on each coarse mesh: what the emulator has to beat."""
+    # torch shares the GPU with JAX here, so JAX must not grab most of it up front
+    os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
     for name, k in cases(films, cells):
         out = cache_dir(dataset) / f"baseline_{name}_k{k}.npz"
         if k == 1 or out.exists():  # at k = 1 magnum.np is the reference itself
@@ -178,28 +180,27 @@ def rollouts(dataset: str, runs: list[str], films: list[str], cells: list[float]
 def field_ramp(axis: int) -> Field:
     """(T, 3) applied field in A/m, one per step: +H_max -> -H_max -> +H_max along axis."""
     n_half = round(2 * H_MAX_MT / RAMP_MT_PER_NS / (DT * 1e9))
-    down = np.linspace(H_MAX_MT, -H_MAX_MT, n_half, endpoint=False)
-    up = np.linspace(-H_MAX_MT, H_MAX_MT, n_half, endpoint=False)
-    h = np.zeros((2 * n_half, 3), np.float32)
-    h[:, axis] = np.concatenate([down, up]) * 1e-3 / MU_0
-    return h
+    down = jnp.linspace(H_MAX_MT, -H_MAX_MT, n_half, endpoint=False)
+    up = jnp.linspace(-H_MAX_MT, H_MAX_MT, n_half, endpoint=False)
+    ramp = jnp.concatenate([down, up]) * 1e-3 / MU_0
+    return jnp.zeros((2 * n_half, 3)).at[:, axis].set(ramp)
 
 
 def saturated_state(n: int, axis: int) -> Field:
     """Saturated along axis, relaxed at +H_max on the native mesh."""
     m = jnp.zeros((n, n, 3)).at[..., axis].set(1.0)
     relaxer = llg_solver((n, n), DX, alpha=1.0)
-    return np.asarray(rollout(relaxer, m, field_ramp(axis)[0], RELAX_STEPS)[-1])
+    return rollout(relaxer, m, field_ramp(axis)[0], RELAX_STEPS)[-1]
 
 
 def sweep(step, m0: Field, h: Field) -> Field:
     """Bulk <m> (T, 3) along the field sequence h (T, 3)."""
-    m, bulk = jnp.asarray(m0), []
+    m, bulk = m0, []
     for i in range(0, len(h), SWEEP_CHUNK):
-        frames = rollout(step, m, h[i : i + SWEEP_CHUNK], len(h[i : i + SWEEP_CHUNK]))
-        bulk.append(np.asarray(frames.mean(axis=(1, 2))))
+        frames = rollout(step, m, h[i : i + SWEEP_CHUNK], len(h[i : i + SWEEP_CHUNK]))  # type: ignore
+        bulk.append(frames.mean(axis=(1, 2)))
         m = frames[-1]
-    return np.concatenate(bulk)
+    return jnp.concatenate(bulk)
 
 
 def sweep_arm(path: Path, model, n: int, cells: list[float], starts: dict, ramps: dict):
@@ -213,7 +214,7 @@ def sweep_arm(path: Path, model, n: int, cells: list[float], starts: dict, ramps
             k = round(nm / CELL_NM)
             solver = llg_solver((n // k, n // k), coarse_dx(k))
             step = solver if model is None else eqx.Partial(model, solver=solver)
-            results[f"bulk_{axis}_{nm:g}"] = sweep(step, coarse_grain(starts[axis], k), h)
+            results[f"bulk_{axis}_{nm:g}"] = sweep(step, coarse_grain(starts[axis], k), h)  # type: ignore
             np.savez(path, **results)
             print(f"{path.stem}: {nm:g} nm, {axis} sweep done", flush=True)
 
@@ -272,7 +273,9 @@ def load_curves(dataset: str, runs: list[str], film: str, k: int, metric: str) -
         path = run_dir(dataset, run) / "scaling" / f"model_{film}_k{k}.npz"
         if path.exists() and metric in np.load(path):
             configurations[run.split("/")[0]].append(np.load(path)[metric])
-    return curves | {name: np.mean(seeds, axis=0) for name, seeds in configurations.items()}
+    return curves | {
+        name: jnp.mean(jnp.stack(seeds), axis=0) for name, seeds in configurations.items()
+    }
 
 
 def report(dataset: str, runs: list[str], films: list[str], cells: list[float] | None):
@@ -307,7 +310,11 @@ def score_table(film: str, mse: dict[float, dict[str, Field]]) -> dict:
     for label in labels:
         means = {nm: float(row[label].mean()) for nm, row in mse.items() if label in row}
         ratios = {nm: means[nm] / solver[nm] for nm in means if nm in solver}
-        score = float(np.exp(np.mean(np.log(list(ratios.values()))))) if ratios else float("nan")
+        score = (
+            float(jnp.exp(jnp.log(jnp.array(list(ratios.values()))).mean()))
+            if ratios
+            else float("nan")
+        )
         summary[label] = {"mse": means, "score": score}
         columns = [
             f"{1e3 * means[nm]:7.2f} ({ratios[nm]:4.2f})" if nm in ratios
@@ -325,8 +332,8 @@ def reference_frames(dataset: str, film: str, k: int, traj: int) -> tuple[Field,
         reference, hs, dx = load_truth(dataset, film, k)
         return reference[traj], hs[traj], dx
     read, h = list(read_trajectories(FILMS[film].files(dataset)))[traj]
-    frames = np.stack([coarse_grain(read(t), k) for t in range(N_STEPS + 1)])
-    return frames.astype(np.float32), h.astype(np.float32), coarse_dx(k)
+    frames = jnp.stack([coarse_grain(read(t), k) for t in range(N_STEPS + 1)])
+    return frames.astype(jnp.float32), h.astype(jnp.float32), coarse_dx(k)  # type: ignore
 
 
 def animate(dataset: str, runs: list[str], films: list[str], cells: list[float] | None, traj: int):
@@ -343,7 +350,7 @@ def animate(dataset: str, runs: list[str], films: list[str], cells: list[float] 
                 solver = llg_solver(reference.shape[1:3], dx)
                 arms = {run: eqx.Partial(model, solver=solver)}
                 if k > 1:
-                    arms["LLG solver"] = solver
+                    arms["LLG solver"] = solver  # type: ignore
                 tag = f"{name}_traj{traj}_{CELL_NM * k:g}nm"
                 titles = [
                     f"{name}, {CELL_NM * k:g} nm cells, t = {t * DT * 1e9:.2f} ns"
@@ -353,7 +360,7 @@ def animate(dataset: str, runs: list[str], films: list[str], cells: list[float] 
                     reference[1:], [t + ": reference" for t in titles], out / f"{tag}_reference.gif"
                 )
                 for arm, step in arms.items():
-                    pred = np.asarray(rollout(step, reference[0], h, N_STEPS))
+                    pred = rollout(step, reference[0], h, N_STEPS)  # type: ignore
                     label = arm.replace("/", "-").replace(" ", "-")
                     plotting.animate(
                         pred, [f"{t}: {arm}" for t in titles], out / f"{tag}_{label}.gif"

@@ -78,10 +78,16 @@ def cycle(loader):
 def train(config: TrainConfig, seed: int, out: Path):
     rng = np.random.default_rng(seed)
     train_loader = well_loader(
-        config.dataset, "train", config.unroll, config.batch_size, seed, shuffle=True
+        config.dataset,
+        "train",
+        config.unroll,
+        config.batch_size,
+        seed,
+        shuffle=True,
     )
+
     val_loader = well_loader(config.dataset, "valid", config.unroll, config.batch_size)
-    nx, ny = train_loader.dataset.metadata.spatial_resolution
+    nx, ny = train_loader.dataset.metadata.spatial_resolution  # type: ignore
     solvers = {k: llg_solver((nx // k, ny // k), coarse_dx(k)) for k in config.pool_factors}
 
     model = build_model(config.model, jr.split(jr.PRNGKey(seed))[1])

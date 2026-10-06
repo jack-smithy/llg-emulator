@@ -97,7 +97,7 @@ class LLGStepper(eqx.Module):
             stepsize_controller=dfx.PIDController(rtol=1e-5, atol=1e-5),
             max_steps=4096,
         )
-        m = solution.ys[-1]
+        m = solution.ys[-1]  # type: ignore
         return m / jnp.linalg.norm(m, axis=-1, keepdims=True)
 
 
