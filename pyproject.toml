@@ -23,8 +23,11 @@ dev = [
     "ruff>=0.16.4",
 ]
 
+[tool.ruff]
+line-length = 100
+
 [tool.ruff.lint]
-ignore=["F722", "F541", "E402", "I001", "PLR0402"]
+ignore = ["F722", "E402"]  # jaxtyping's string annotations; physics.py restores an env var before importing neuralmag
 
 [tool.uv.sources]
 pdequinox = { path = "../pdequinox" }
