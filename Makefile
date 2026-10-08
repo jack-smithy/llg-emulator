@@ -1,4 +1,4 @@
-CONFIG ?= configs/closure.yaml
+CONFIG ?= configs/sil-wide-long.yaml
 
 check:
 	squeue -u smith
@@ -16,6 +16,6 @@ logs:
 clear-logs:
 	rm -rf logs/*.out
 
-# two seeds of a recipe: make train CONFIG=configs/k1-long.yaml
+# two seeds of a recipe: make train CONFIG=configs/k1-wide-long.yaml
 train: logs
 	sbatch --array=0-1 scripts/train.slrm $(CONFIG)

@@ -1,12 +1,12 @@
 """Evaluation of trained runs against magnum.np, in stages sharing RESULTS/<dataset>/scaling/.
 
-uv run evaluate.py validate --runs closure/seed_0
+uv run evaluate.py validate --runs sil-wide-long/seed_0
 uv run evaluate.py truth --films sq256 valid256      (CPU: the coarse-grained reference)
 uv run evaluate.py baseline --films sq256 valid256   (GPU: magnum.np on the coarse mesh)
-uv run evaluate.py rollouts --runs closure/seed_0 --films sq256 valid256
-uv run evaluate.py hysteresis --runs closure/seed_0 --films sq256
-uv run evaluate.py report --runs closure/seed_0 closure/seed_1 --films valid256
-uv run evaluate.py animate --runs closure/seed_0 --films sq512 --cells 10 20
+uv run evaluate.py rollouts --runs sil-wide-long/seed_0 --films sq256 valid256
+uv run evaluate.py hysteresis --runs sil-wide-long/seed_0 --films sq256
+uv run evaluate.py report --runs sil-wide-long/seed_0 sil-wide-long/seed_1 --films valid256
+uv run evaluate.py animate --runs sil-wide-long/seed_0 --films sq512 --cells 10 20
 """
 
 import json

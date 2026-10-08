@@ -1,9 +1,11 @@
+# the original SIL inputs (P(m) and the scalars only) on k1-wide-long's recipe
 model:
   arch: classic
   hidden_channels: 128
   num_blocks: 4
   zero_init: true
-  formulation: closure
+  formulation: sil
+  fields: false
 learning_rate: 3.0e-4
 batch_size: 16
 num_steps: 20000

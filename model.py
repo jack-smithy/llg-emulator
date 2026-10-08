@@ -1,11 +1,20 @@
-"""The learned-closure LLG: coarse micromagnetics stepped under one extra field,
+"""Two ways for a network to correct coarse micromagnetics, the LLG stepper P on the coarse
+mesh (exchange, its exact demag field, the applied field):
+
+solver-in-the-loop (Um et al. 2020, `SolverInTheLoop`, the default): the network corrects
+the coarse step's output,
+
+    m' = normalise(P(m) + N(P(m), h_ex / Ms, h_d / Ms; H_ext / Ms, eps)),   eps = l_ex / delta
+
+the learned closure (`ClosureEmulator`): the coarse LLG stepped under one extra field,
 
     m' = LLG_dt[m; H_ext + H_theta(m)]
-    H_theta(m) = eps Ms N(m, h_ex / Ms, h_d / Ms; H_ext / Ms, eps),   eps = l_ex / delta
+    H_theta(m) = eps Ms N(m, h_ex / Ms, h_d / Ms; H_ext / Ms, eps)
 
-The network only sees fields in units of Ms on the coarse mesh, plus eps, so coarser
-meshes move its inputs towards zero rather than off the end of the training range, and
-the eps prefactor sends the model back to plain coarse micromagnetics as cells grow.
+Both networks see fields in units of Ms on the coarse mesh, plus eps. On the same recipe
+solver-in-the-loop is the more accurate at 5-40 nm cells; the closure's eps prefactor sends
+it back to the plain solver on much coarser, untrained meshes (160-320 nm), and a large
+closure field can make the LLG too stiff for the integrator.
 """
 
 import json
@@ -33,24 +42,37 @@ class ModelConfig:
     hidden_channels: int = 64
     num_blocks: int = 4
     zero_init: bool = True  # start as the coarse solver itself
+    formulation: str = "sil"  # solver-in-the-loop, or "closure"
+    fields: bool = True  # read h_ex and h_d besides m; without, the original SIL's inputs
+
+
+def network_inputs(
+    m: Float[Array, "..."], h: Float[Array, "..."], solver: LLGStepper, fields: bool
+) -> tuple[Float[Array, "..."], Float[Array, "..."]]:
+    """Channels-first m [, h_ex, h_d] / Ms on the coarse mesh, and [Hx / Ms, Hy / Ms, eps]."""
+    Ms = solver.Ms
+    eps = jnp.sqrt(2 * solver.A / MU_0) / Ms / solver.dx[0]
+    x = [m]
+    if fields:
+        x += [exchange_field(m, solver.dx, Ms, solver.A) / Ms, solver.demag(m) / Ms]
+    x = jnp.moveaxis(jnp.concatenate(x, axis=-1), -1, 0)
+    return x, jnp.stack([h[0] / Ms, h[1] / Ms, eps])
 
 
 class ClosureEmulator(eqx.Module):
     network: pdeqx.ConstantEmbeddingMetadataNetwork
+    fields: bool = eqx.field(static=True)
 
-    def __init__(self, network: eqx.Module):
+    def __init__(self, network: eqx.Module, fields: bool = True):
         self.network = pdeqx.ConstantEmbeddingMetadataNetwork(network, 1.0)
+        self.fields = fields
 
     def closure_field(
         self, m: Float[Array, "..."], h: Float[Array, "..."], solver: LLGStepper
     ) -> Float[Array, "..."]:
-        Ms = solver.Ms
-        eps = jnp.sqrt(2 * solver.A / MU_0) / Ms / solver.dx[0]
-        h_ex = exchange_field(m, solver.dx, Ms, solver.A)
-        fields = jnp.concatenate([m, h_ex / Ms, solver.demag(m) / Ms], axis=-1)
-        scalars = jnp.stack([h[0] / Ms, h[1] / Ms, eps])
-        out = self.network(jnp.moveaxis(fields, -1, 0), meta_data=scalars)
-        return eps * Ms * jnp.moveaxis(out, 0, -1)
+        x, scalars = network_inputs(m, h, solver, self.fields)
+        out = self.network(x, meta_data=scalars)
+        return scalars[2] * solver.Ms * jnp.moveaxis(out, 0, -1)
 
     def __call__(
         self, m: Float[Array, "..."], h: Float[Array, "..."], solver: LLGStepper
@@ -58,10 +80,31 @@ class ClosureEmulator(eqx.Module):
         return solver(m, h + self.closure_field(m, h, solver))
 
 
-def build_model(config: ModelConfig, key: PRNGKeyArray) -> ClosureEmulator:
+class SolverInTheLoop(eqx.Module):
+    network: pdeqx.ConstantEmbeddingMetadataNetwork
+    fields: bool = eqx.field(static=True)
+
+    def __init__(self, network: eqx.Module, fields: bool = True):
+        self.network = pdeqx.ConstantEmbeddingMetadataNetwork(network, 1.0)
+        self.fields = fields
+
+    def __call__(
+        self, m: Float[Array, "..."], h: Float[Array, "..."], solver: LLGStepper
+    ) -> Float[Array, "..."]:
+        p = solver(m, h)
+        x, scalars = network_inputs(p, h, solver, self.fields)
+        m = p + jnp.moveaxis(self.network(x, meta_data=scalars), 0, -1)
+        return m / jnp.linalg.norm(m, axis=-1, keepdims=True)
+
+
+Emulator = ClosureEmulator | SolverInTheLoop
+FORMULATIONS = {"closure": ClosureEmulator, "sil": SolverInTheLoop}
+
+
+def build_model(config: ModelConfig, key: PRNGKeyArray) -> Emulator:
     network = ARCHS[config.arch](
         num_spatial_dims=2,
-        in_channels=9 + 3,  # m, h_ex, h_d + the embedded scalars
+        in_channels=(9 if config.fields else 3) + 3,  # m [, h_ex, h_d] + the embedded scalars
         out_channels=3,
         hidden_channels=config.hidden_channels,
         num_blocks=config.num_blocks,
@@ -76,7 +119,7 @@ def build_model(config: ModelConfig, key: PRNGKeyArray) -> ClosureEmulator:
             network,
             replace_fn=jnp.zeros_like,
         )
-    return ClosureEmulator(network)
+    return FORMULATIONS[config.formulation](network, config.fields)
 
 
 def load_config(run: Path) -> ModelConfig:
@@ -87,15 +130,17 @@ def load_config(run: Path) -> ModelConfig:
     if not meta.get("closure"):
         raise ValueError(f"{run} is not a closure model")
     fields = ("arch", "hidden_channels", "num_blocks", "zero_init")
-    return ModelConfig(**{name: meta[name] for name in fields if name in meta})
+    return ModelConfig(
+        formulation="closure", **{name: meta[name] for name in fields if name in meta}
+    )
 
 
-def save_model(model: ClosureEmulator, path: Path):
+def save_model(model: Emulator, path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
     eqx.tree_serialise_leaves(path, model)
 
 
-def load_model(run: Path, tag: str = "model") -> ClosureEmulator:
+def load_model(run: Path, tag: str = "model") -> Emulator:
     skeleton = build_model(load_config(run), jr.PRNGKey(0))
     model = eqx.tree_deserialise_leaves(run / f"{tag}.eqx", skeleton)
     return eqx.nn.inference_mode(model)

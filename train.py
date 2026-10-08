@@ -21,7 +21,7 @@ from tqdm import tqdm
 from data import Batch, prepare, run_dir, to_batch, well_loader
 from llg.constants import coarse_dx
 from llg.physics import LLGStepper, llg_solver, rollout_batch
-from model import ClosureEmulator, ModelConfig, build_model, save_model
+from model import Emulator, ModelConfig, build_model, save_model
 
 jax.config.update("jax_compilation_cache_dir", ".jax_cache")
 
@@ -44,7 +44,7 @@ def load_train_config(path: Path) -> TrainConfig:
     return TrainConfig(model=ModelConfig(**raw.pop("model")), **raw)
 
 
-def loss(model: ClosureEmulator, batch: Batch, solver: LLGStepper) -> Float[Array, "..."]:
+def loss(model: Emulator, batch: Batch, solver: LLGStepper) -> Float[Array, "..."]:
     step = eqx.Partial(model, solver=solver)
     pred = rollout_batch(step, batch.m, batch.h, batch.targets.shape[1])
     return jnp.mean((pred - batch.targets) ** 2)
@@ -60,7 +60,7 @@ def train_step(model, opt_state, batch: Batch, solver: LLGStepper, optimizer):
 validation_loss = eqx.filter_jit(loss)
 
 
-def validate(model: ClosureEmulator, loader, solvers: dict[int, LLGStepper]) -> float:
+def validate(model: Emulator, loader, solvers: dict[int, LLGStepper]) -> float:
     """Every batch at the next factor in turn, so each validation scores the same batches."""
     factors = list(solvers)
     losses = [

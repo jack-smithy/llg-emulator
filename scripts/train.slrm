@@ -1,8 +1,9 @@
 #!/bin/bash
 #
 # One recipe, one seed per array task, then its validation scores:
-#   sbatch --array=0-1 scripts/train.slrm configs/closure.yaml
-# 20k-step recipes need about 12 h on a slice: add -t 16:00:00.
+#   sbatch --array=0-1 scripts/train.slrm configs/sil-wide-long.yaml
+# The 128-channel 20k-step recipes (sil-wide-long, k1-wide-long) took ~5-6.5 h on a whole
+# card: add --gres=gpu:full:1 -c 8.
 #
 #SBATCH -J train
 #SBATCH --time="12:00:00"
