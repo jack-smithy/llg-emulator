@@ -1,0 +1,16 @@
+# sil-wide-long/seed_0 fine-tuned on 16-step rollouts: its error is 25x below the solver's
+# inside the 8 training steps and grows to 0.4-0.9 of it by 1 ns. No k = 1 (memory)
+model:
+  arch: classic
+  hidden_channels: 128
+  num_blocks: 4
+  zero_init: true
+  formulation: sil
+init_from: sil-wide-long/seed_0
+learning_rate: 1.0e-4
+batch_size: 16
+num_steps: 6000
+val_every: 1000
+pool_factors: [2, 4, 8]
+unroll: 16
+augment: true

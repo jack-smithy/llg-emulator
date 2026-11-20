@@ -1,0 +1,17 @@
+# sil-k248-60k never saw 5 nm cells and is useless there (rollout MSE 0.29): fine-tuned
+# with k = 1 in one batch of seven
+model:
+  arch: classic
+  hidden_channels: 128
+  num_blocks: 4
+  zero_init: true
+  formulation: sil
+init_from: sil-k248-60k/seed_0
+learning_rate: 1.0e-4
+warmup_steps: 500
+batch_size: 16
+num_steps: 6000
+val_every: 1000
+pool_factors: [1, 2, 2, 4, 4, 8, 8]
+unroll: 8
+augment: true

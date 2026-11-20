@@ -1,0 +1,25 @@
+#!/bin/bash
+#
+# The shield study (shield.py): convergence in cell size, both wall energies, random seeds.
+#   sbatch --gres=gpu:a100:1 scripts/shield.slrm
+#
+#SBATCH -J shield
+#SBATCH --time="2:30:00"
+#SBATCH --gres=gpu:1g.24gb:1
+#SBATCH -c 2
+#SBATCH -o logs/%x-%j.out
+
+set -uo pipefail
+rc=0
+run() { uv run shield.py run "$@" || rc=$?; }
+for cell in 2 1 0.5; do
+    [ "$cell" != 2 ] && run --cell $cell
+    run --cell $cell --solver sigma --sigma 9.1e-3
+done
+for seed in $(seq 1 9); do
+    for cell in 2 1; do
+        run --cell $cell --solver plain sigma --init random --seed $seed
+    done
+done
+uv run shield.py report
+exit $rc

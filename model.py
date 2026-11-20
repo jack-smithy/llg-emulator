@@ -11,7 +11,15 @@ the learned closure (`ClosureEmulator`): the coarse LLG stepped under one extra 
     m' = LLG_dt[m; H_ext + H_theta(m)]
     H_theta(m) = eps Ms N(m, h_ex / Ms, h_d / Ms; H_ext / Ms, eps)
 
-Both networks see fields in units of Ms on the coarse mesh, plus eps. On the same recipe
+the energy closure (`EnergyClosure`): the closure field as the gradient of a learned local
+energy of m alone (units of mu0 Ms^2 per cell volume), so every relaxation lowers an energy
+
+    H_theta(m) = -eps Ms d/dm sum_cells e_theta(m; eps)
+
+and its two-parameter limit (`ExchangeRescale`), the coarse-grained domain solver's idea of a
+renormalised exchange constant, A_eff / A = exp(a0 + a1 log eps).
+
+The networks see fields in units of Ms on the coarse mesh, plus eps. On the same recipe
 solver-in-the-loop is the more accurate at 5-40 nm cells; the closure's eps prefactor sends
 it back to the plain solver on much coarser, untrained meshes (160-320 nm), and a large
 closure field can make the LLG too stiff for the integrator.
@@ -42,8 +50,13 @@ class ModelConfig:
     hidden_channels: int = 64
     num_blocks: int = 4
     zero_init: bool = True  # start as the coarse solver itself
-    formulation: str = "sil"  # solver-in-the-loop, or "closure"
+    formulation: str = "sil"  # solver-in-the-loop, "closure", "energy" or "aeff"
     fields: bool = True  # read h_ex and h_d besides m; without, the original SIL's inputs
+
+
+def cell_eps(solver: LLGStepper) -> Float[Array, ""]:
+    """l_ex / dx of the solver's mesh."""
+    return jnp.sqrt(2 * solver.A / MU_0) / solver.Ms / solver.dx[0]
 
 
 def network_inputs(
@@ -51,7 +64,7 @@ def network_inputs(
 ) -> tuple[Float[Array, "..."], Float[Array, "..."]]:
     """Channels-first m [, h_ex, h_d] / Ms on the coarse mesh, and [Hx / Ms, Hy / Ms, eps]."""
     Ms = solver.Ms
-    eps = jnp.sqrt(2 * solver.A / MU_0) / Ms / solver.dx[0]
+    eps = cell_eps(solver)
     x = [m]
     if fields:
         x += [exchange_field(m, solver.dx, Ms, solver.A) / Ms, solver.demag(m) / Ms]
@@ -97,15 +110,60 @@ class SolverInTheLoop(eqx.Module):
         return m / jnp.linalg.norm(m, axis=-1, keepdims=True)
 
 
-Emulator = ClosureEmulator | SolverInTheLoop
-FORMULATIONS = {"closure": ClosureEmulator, "sil": SolverInTheLoop}
+class EnergyClosure(eqx.Module):
+    network: pdeqx.ConstantEmbeddingMetadataNetwork
+
+    def __init__(self, network: eqx.Module, fields: bool = False):
+        self.network = pdeqx.ConstantEmbeddingMetadataNetwork(network, 1.0)
+
+    def energy(self, m: Float[Array, "nx ny 3"], eps: Float[Array, ""]) -> Float[Array, ""]:
+        return self.network(jnp.moveaxis(m, -1, 0), meta_data=eps[None]).sum()
+
+    def closure_field(
+        self, m: Float[Array, "nx ny 3"], h: Float[Array, "3"], solver: LLGStepper
+    ) -> Float[Array, "nx ny 3"]:
+        eps = cell_eps(solver)
+        return -eps * solver.Ms * jax.grad(self.energy)(m, eps)
+
+    def __call__(
+        self, m: Float[Array, "nx ny 3"], h: Float[Array, "3"], solver: LLGStepper
+    ) -> Float[Array, "nx ny 3"]:
+        return solver(m, h + self.closure_field(m, h, solver))
+
+
+class ExchangeRescale(eqx.Module):
+    log_scale: Float[Array, "2"]  # a0, a1
+
+    def __init__(self):
+        self.log_scale = jnp.zeros(2)
+
+    def closure_field(
+        self, m: Float[Array, "nx ny 3"], h: Float[Array, "3"], solver: LLGStepper
+    ) -> Float[Array, "nx ny 3"]:
+        scale = jnp.exp(self.log_scale[0] + self.log_scale[1] * jnp.log(cell_eps(solver)))
+        return (scale - 1) * exchange_field(m, solver.dx, solver.Ms, solver.A)
+
+    def __call__(
+        self, m: Float[Array, "nx ny 3"], h: Float[Array, "3"], solver: LLGStepper
+    ) -> Float[Array, "nx ny 3"]:
+        return solver(m, h + self.closure_field(m, h, solver))
+
+
+Emulator = ClosureEmulator | SolverInTheLoop | EnergyClosure | ExchangeRescale
+FORMULATIONS = {"closure": ClosureEmulator, "sil": SolverInTheLoop, "energy": EnergyClosure}
 
 
 def build_model(config: ModelConfig, key: PRNGKeyArray) -> Emulator:
+    if config.formulation == "aeff":
+        return ExchangeRescale()
+    energy = config.formulation == "energy"
+    if energy and config.fields:
+        raise ValueError("the energy closure reads m only: set fields: false")
     network = ARCHS[config.arch](
         num_spatial_dims=2,
-        in_channels=(9 if config.fields else 3) + 3,  # m [, h_ex, h_d] + the embedded scalars
-        out_channels=3,
+        # m [, h_ex, h_d] + the embedded scalars (eps alone for the energy)
+        in_channels=(9 if config.fields else 3) + (1 if energy else 3),
+        out_channels=1 if energy else 3,
         hidden_channels=config.hidden_channels,
         num_blocks=config.num_blocks,
         activation=jax.nn.gelu,

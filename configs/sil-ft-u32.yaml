@@ -1,0 +1,15 @@
+# as sil-ft-u16, on 32-step rollouts with half the batch
+model:
+  arch: classic
+  hidden_channels: 128
+  num_blocks: 4
+  zero_init: true
+  formulation: sil
+init_from: sil-wide-long/seed_0
+learning_rate: 1.0e-4
+batch_size: 8
+num_steps: 6000
+val_every: 1000
+pool_factors: [2, 4, 8]
+unroll: 32
+augment: true

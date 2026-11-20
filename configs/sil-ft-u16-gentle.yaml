@@ -1,0 +1,17 @@
+# sil-ft-u16 with a fifth of the learning rate and a warmup: at 1e-4 from a cold optimiser
+# the first 1000 steps made the 16-step validation loss worse (1.3e-3 -> 1.6e-3)
+model:
+  arch: classic
+  hidden_channels: 128
+  num_blocks: 4
+  zero_init: true
+  formulation: sil
+init_from: sil-wide-long/seed_0
+learning_rate: 2.0e-5
+warmup_steps: 500
+batch_size: 16
+num_steps: 6000
+val_every: 1000
+pool_factors: [2, 4, 8]
+unroll: 16
+augment: true

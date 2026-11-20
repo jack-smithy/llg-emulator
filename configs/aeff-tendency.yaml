@@ -1,0 +1,12 @@
+# the coarse-grained domain solver's renormalised exchange, A_eff / A = exp(a0 + a1 log eps),
+# fitted by matching the block-mean dm/dt of the 5 nm truth
+model:
+  formulation: aeff
+learning_rate: 1.0e-2
+batch_size: 16
+num_steps: 2000
+val_every: 250
+pool_factors: [1, 2, 4, 8]
+unroll: 1
+augment: true
+objective: tendency

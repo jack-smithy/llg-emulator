@@ -10,6 +10,13 @@ def mse(pred: Field, truth: Field) -> Field:
     return ((pred - truth) ** 2).mean(axis=(-3, -2, -1))
 
 
+def bulk_mse(pred: Field, truth: Field) -> Field:
+    """Squared error of the film average <m>: what a sensor or a hysteresis loop measures.
+    Chaos displaces walls and vortex cores, which caps the pointwise MSE of a 1 ns rollout
+    for any model; the film average stays predictable."""
+    return ((pred.mean(axis=(-3, -2)) - truth.mean(axis=(-3, -2))) ** 2).mean(axis=-1)
+
+
 def vrmse(pred: Field, truth: Field, eps: float = 1e-7) -> Field:
     """the_well's VRMSE: per component, normalised by the truth's spatial variance."""
     err = ((pred - truth) ** 2).mean(axis=(-3, -2))
@@ -21,7 +28,7 @@ def cosine_similarity(pred: Field, truth: Field) -> Field:
     return (pred * truth).sum(axis=-1).mean(axis=(-2, -1))
 
 
-METRICS = {"mse": mse, "vrmse": vrmse, "cos": cosine_similarity}
+METRICS = {"mse": mse, "bulk_mse": bulk_mse, "vrmse": vrmse, "cos": cosine_similarity}
 
 
 def loop_metrics(h_mt: Field, m: Field) -> dict[str, float]:

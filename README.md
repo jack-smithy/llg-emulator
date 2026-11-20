@@ -18,7 +18,8 @@ llg/              the physics
   constants.py      material, cell size, time step
   physics.py        exchange and demag fields, the LLG stepper, rollouts
   magnum.py         magnum.np initial states, relaxation and simulation
-model.py          solver-in-the-loop and the learned closure; building, saving, loading
+  bulk.py           3D demag, exchange, energy minimisers and exact stray fields (the shield)
+model.py          solver-in-the-loop and the learned closures; building, saving, loading
 data.py           datasets, films and result paths; loaders, coarse-graining, D4 augmentation
 metrics.py        MSE, VRMSE, cosine similarity, hysteresis-loop metrics
 plotting.py       the figures
@@ -26,6 +27,7 @@ configs/          training recipes
 train.py          train one recipe for one seed
 evaluate.py       validation, rollouts against magnum.np, hysteresis loops, report, animations
 generate.py       the training set and the held-out films
+shield.py         the shield study
 scripts/          Slurm wrappers of the three entry points
 ```
 
@@ -42,9 +44,18 @@ scripts/pull_dataset.sh    # datasets/llg_field_switching from Hugging Face
 ## Train
 
 ```sh
-sbatch --array=0-1 --gres=gpu:full:1 -c 8 scripts/train.slrm configs/sil-wide-long.yaml  # seeds 0, 1
-uv run train.py configs/sil-wide-long.yaml --seed 0          # the same, in a job of your own
+scripts/chain.sh configs/sil-wide-long.yaml 0 3 --gres=gpu:full:1 -c 8   # seed 0, three <= 3 h links
+sbatch --array=0-1 scripts/train.slrm configs/aeff-tendency.yaml          # short recipes: one job per seed
+uv run train.py configs/sil-wide-long.yaml --seed 0          # in a job of your own
 ```
+
+A run resumes from its last checkpoint (`state.eqx`), so long recipes run as chains of short
+jobs; `--max-minutes` makes a link stop at a checkpoint in time.
+
+Recipes set the formulation (`sil`, `closure`, `energy`: the closure as the gradient of a
+learned local energy of m, `aeff`: a fitted exchange constant A_eff(eps)) and the objective:
+`rollout` (unrolled rollouts against the coarse-grained truth) or `tendency` (closure
+formulations: the coarse dm/dt against the block mean of the 5 nm dm/dt, single snapshots).
 
 A run lands in `results-v2/<dataset>/<recipe>/seed_<seed>/` (`RESULTS_ROOT` sets another
 root) with its `config.yaml`, `stats.json`, `model.eqx` and checkpoints. `train.slrm` then
@@ -62,6 +73,24 @@ sbatch scripts/evaluate.slrm rollouts --runs sil-wide-long/seed_0 --films sq256 
 sbatch scripts/evaluate.slrm hysteresis --runs sil-wide-long/seed_0 --films sq256
 uv run evaluate.py report --runs sil-wide-long/seed_0 sil-wide-long/seed_1 --films valid256 --cells 10 20 40
 sbatch scripts/evaluate.slrm animate --runs sil-wide-long/seed_0 --films sq512 --cells 10 20
+```
+
+`report` scores each run against the coarse solver twice: on the pointwise rollout MSE and
+on the MSE of the film average ⟨m⟩(t). Switching is chaotic, so the pointwise error of a
+1 ns rollout is capped for any model, while the film average, what a sensor or a
+hysteresis loop measures, stays predictable. `baseline` and `rollouts` redo files that lack
+a metric added since they were written.
+
+## The shield study
+
+`shield.py` takes the 100 x 50 x 20 um NiFe shield of D. Suess's TMR study at 50 mT on a 3D
+mesh (`llg/bulk.py`): the soft-magnet (Maxwell, chi -> infinity) limit, coarse micromagnetics,
+and the study's coarse-grained domain solver (micromagnetics with A_eff = sigma dx / 2), with
+the stray field at the probe points evaluated exactly.
+
+```sh
+sbatch --gres=gpu:a100:1 scripts/shield.slrm      # 2, 1, 0.5 um cells, both sigmas, seeds
+uv run shield.py report
 ```
 
 ## Generate data

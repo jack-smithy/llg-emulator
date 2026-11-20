@@ -75,6 +75,11 @@ def save_metrics(path: Path, pred: Field, truth: Field) -> dict[str, Field]:
     return scores
 
 
+def scored(path: Path) -> bool:
+    """Whether path holds every metric: files from before a metric was added are redone."""
+    return path.exists() and set(metrics.METRICS) <= set(np.load(path).files)
+
+
 def validate(dataset: str, runs: list[str]):
     """One-step metrics on the validation split, and the learning curve."""
     loader = well_loader(dataset, "valid", n_steps=1, batch_size=16)
@@ -157,7 +162,7 @@ def baseline(dataset: str, films: list[str], cells: list[float] | None):
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
     for name, k in cases(films, cells):
         out = cache_dir(dataset) / f"baseline_{name}_k{k}.npz"
-        if k == 1 or out.exists():  # at k = 1 magnum.np is the reference itself
+        if k == 1 or scored(out):  # at k = 1 magnum.np is the reference itself
             continue
         reference, hs, dx = load_truth(dataset, name, k)
         scores = save_metrics(out, magnum_rollout(reference, hs, dx), reference[:, 1:])
@@ -170,7 +175,7 @@ def rollouts(dataset: str, runs: list[str], films: list[str], cells: list[float]
         model = load_model(run_dir(dataset, run))
         for name, k in cases(films, cells):
             out = run_dir(dataset, run) / "scaling" / f"model_{name}_k{k}.npz"
-            if out.exists():
+            if scored(out):
                 continue
             reference, hs, dx = load_truth(dataset, name, k)
             scores = save_metrics(out, model_rollout(model, reference, hs, dx), reference[:, 1:])
@@ -279,19 +284,24 @@ def load_curves(dataset: str, runs: list[str], film: str, k: int, metric: str) -
 
 
 def report(dataset: str, runs: list[str], films: list[str], cells: list[float] | None):
-    """Per film: a table of mean rollout MSE against the coarse solver and a score (the
-    geometric mean over cell sizes of the ratio, < 1 beats the solver), and figures."""
+    """Per film: tables of the mean rollout MSE, pointwise and of the film average <m>,
+    against the coarse solver, each with a score (the geometric mean over cell sizes of the
+    ratio, < 1 beats the solver), and figures."""
     out = cache_dir(dataset) / "report"
     summary, points = {}, {}
     for name in films:
         ks = factors(FILMS[name], cells)
         mse = {CELL_NM * k: load_curves(dataset, runs, name, k, "mse") for k in ks}
-        summary[name] = score_table(name, mse)
+        bulk = {CELL_NM * k: load_curves(dataset, runs, name, k, "bulk_mse") for k in ks}
+        summary[name] = {
+            "mse": score_table(f"{name}: mean rollout MSE", 1e-3, mse),
+            "bulk_mse": score_table(f"{name}: mean rollout MSE of the film average <m>", 1e-6, bulk),
+        }
         points[name] = defaultdict(dict)
         for nm, row in mse.items():
             for label, curve in row.items():
                 points[name][label][nm] = float(curve.mean())
-        for metric in ("mse", "vrmse"):
+        for metric in ("mse", "bulk_mse", "vrmse"):
             curves = {CELL_NM * k: load_curves(dataset, runs, name, k, metric) for k in ks}
             title = f"{FILMS[name].side_um:g} um film ({name})"
             plotting.save(
@@ -301,11 +311,11 @@ def report(dataset: str, runs: list[str], films: list[str], cells: list[float] |
     (out / "summary.json").write_text(json.dumps(summary, indent=1))
 
 
-def score_table(film: str, mse: dict[float, dict[str, Field]]) -> dict:
+def score_table(title: str, unit: float, mse: dict[float, dict[str, Field]]) -> dict:
     solver = {nm: row["LLG solver"].mean() for nm, row in mse.items() if "LLG solver" in row}
     labels = list(dict.fromkeys(label for row in mse.values() for label in row))
-    print(f"\n{film}: mean rollout MSE x1e-3 (ratio to the LLG solver)")
-    print(f"{'':>20} " + " ".join(f"{nm:>14g}" for nm in mse) + "   score")
+    print(f"\n{title} x{unit:.0e} (ratio to the LLG solver)")
+    print(f"{'':>20} " + " ".join(f"{nm:>15g}" for nm in mse) + "   score")
     summary = {}
     for label in labels:
         means = {nm: float(row[label].mean()) for nm, row in mse.items() if label in row}
@@ -317,9 +327,9 @@ def score_table(film: str, mse: dict[float, dict[str, Field]]) -> dict:
         )
         summary[label] = {"mse": means, "score": score}
         columns = [
-            f"{1e3 * means[nm]:7.2f} ({ratios[nm]:4.2f})" if nm in ratios
-            else f"{1e3 * means[nm]:7.2f}       " if nm in means
-            else f"{'-':>14}"
+            f"{means[nm] / unit:7.2f} ({ratios[nm]:5.3f})" if nm in ratios
+            else f"{means[nm] / unit:7.2f}        " if nm in means
+            else f"{'-':>15}"
             for nm in mse
         ]  # fmt: skip
         print(f"{label:>20} " + " ".join(columns) + f"   {score:6.3f}")

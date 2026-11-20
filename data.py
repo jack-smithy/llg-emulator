@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from jaxtyping import Array, Float
 from the_well.data import WellDataset
-from torch.utils.data import DataLoader, default_collate
+from torch.utils.data import DataLoader
 
 N_STEPS = 100  # frames after the initial one in every trajectory (1 ns)
 FIELDS = ("mx", "my", "mz")
@@ -93,7 +93,9 @@ def well_loader(
 
 
 def numpy_collate(samples: list[dict]) -> dict:
-    return jtu.tree_map(np.asarray, default_collate(samples))
+    """Stacked as numpy: torch's own collate puts a worker's batch in /dev/shm, and a run
+    on gtos3 lost such a file mid-training."""
+    return jtu.tree_map(lambda *xs: np.stack([np.asarray(x) for x in xs]), *samples)
 
 
 def to_batch(sample: dict) -> Batch:
@@ -104,13 +106,20 @@ def to_batch(sample: dict) -> Batch:
     )
 
 
-def coarse_grain(m: Float[Array, "..."], k: int) -> Float[Array, "..."]:
-    """Block mean onto k-times larger cells, back on the unit sphere."""
+def block_mean(m: Float[Array, "..."], k: int) -> Float[Array, "..."]:
+    """Mean over k x k blocks of cells, of any (..., nx, ny, 3) field."""
     m = jnp.asarray(m)
     if k == 1:
         return m
     *lead, nx, ny, _ = m.shape
-    m = m.reshape(*lead, nx // k, k, ny // k, k, 3).mean(axis=(-4, -2))
+    return m.reshape(*lead, nx // k, k, ny // k, k, 3).mean(axis=(-4, -2))
+
+
+def coarse_grain(m: Float[Array, "..."], k: int) -> Float[Array, "..."]:
+    """Block mean onto k-times larger cells, back on the unit sphere."""
+    if k == 1:
+        return jnp.asarray(m)
+    m = block_mean(m, k)
     return m / jnp.linalg.norm(m, axis=-1, keepdims=True)
 
 

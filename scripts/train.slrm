@@ -2,23 +2,28 @@
 #
 # One recipe, one seed per array task, then its validation scores:
 #   sbatch --array=0-1 scripts/train.slrm configs/sil-wide-long.yaml
-# The 128-channel 20k-step recipes (sil-wide-long, k1-wide-long) took ~5-6.5 h on a whole
-# card: add --gres=gpu:full:1 -c 8.
+# A run resumes from its last checkpoint. Recipes longer than 3 h run as a chain of short
+# links (scripts/chain.sh), each stopping at a checkpoint after MAX_MINUTES.
+# The 128-channel 20k-step rollout recipes (sil-wide-long, k1-wide-long) took ~5-6.5 h on a
+# whole card: add --gres=gpu:full:1 -c 8.
 #
 #SBATCH -J train
-#SBATCH --time="12:00:00"
+#SBATCH --time="3:00:00"
 #SBATCH --gres=gpu:1g.24gb:1
 #SBATCH -c 4
 #SBATCH --array=0
 #SBATCH -o logs/%x-%A_%a.out
 
 set -euo pipefail
+command -v gto-memcap >/dev/null && gto-memcap 32G  # gto4 only
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.95
 
 CONFIG=$1
 RUN="$(basename "$CONFIG" .yaml)/seed_$SLURM_ARRAY_TASK_ID"
 echo "$RUN on $SLURM_NODELIST, $(date)"
 
-uv run train.py "$CONFIG" --seed "$SLURM_ARRAY_TASK_ID"
-uv run evaluate.py validate --runs "$RUN"
-uv run evaluate.py rollouts --runs "$RUN" --films valid256
+uv run train.py "$CONFIG" --seed "$SLURM_ARRAY_TASK_ID" ${MAX_MINUTES:+--max-minutes "$MAX_MINUTES"}
+if compgen -G "${RESULTS_ROOT:-results-v2}/*/$RUN/model.eqx" >/dev/null; then
+    uv run evaluate.py validate --runs "$RUN"
+    uv run evaluate.py rollouts --runs "$RUN" --films valid256
+fi

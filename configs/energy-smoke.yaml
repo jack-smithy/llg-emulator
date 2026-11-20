@@ -1,0 +1,12 @@
+# 40 rollout steps of the energy closure: does it run, how fast
+model:
+  arch: classic
+  hidden_channels: 128
+  num_blocks: 4
+  zero_init: true
+  formulation: energy
+  fields: false
+num_steps: 40
+val_every: 20
+pool_factors: [1, 2, 4, 8]
+unroll: 8
