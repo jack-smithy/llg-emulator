@@ -1,16 +1,27 @@
 [project]
 name = "llg-emulator"
 version = "0.1.0"
-description = "FNO emulator for LLG micromagnetics of permalloy thin films"
+description = "Learned coarse micromagnetics for NiFe shields (quasi-static field sweeps)"
 readme = "README.md"
-requires-python = ">=3.13"
-dependencies = []
+requires-python = ">=3.12"
+dependencies = [
+    "h5py>=3.16.0",
+    "magnumnp==2.2.0",
+    "the-well==1.2.0",
+    "torch==2.13.0",
+]
 
 [dependency-groups]
 dev = [
     "ipykernel>=7.3.0",
+    "magpylib>=6.3.0",
+    "pytest>=9.2.0",
     "ruff>=0.16.4",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
 
 [tool.ruff.lint]
 ignore=["F722", "F541", "E402", "I001", "PLR0402"]
