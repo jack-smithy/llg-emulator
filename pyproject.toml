@@ -4,18 +4,7 @@ version = "0.1.0"
 description = "FNO emulator for LLG micromagnetics of permalloy thin films"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = [
-    "accelerate>=1.15.0",
-    "h5py>=3.16.0",
-    "jax[cuda13]>=0.11.2",
-    "magnumnp>=2.2.0",
-    "neuralmag[jax]>=1.0.0",
-    "optax>=0.2.8",
-    "pdequinox",
-    "pyyaml>=6.0.3",
-    "the-well>=1.2.0",
-    "torch>=2.14.0",
-]
+dependencies = []
 
 [dependency-groups]
 dev = [
@@ -25,6 +14,3 @@ dev = [
 
 [tool.ruff.lint]
 ignore=["F722", "F541", "E402", "I001", "PLR0402"]
-
-[tool.uv.sources]
-pdequinox = { path = "../pdequinox" }
