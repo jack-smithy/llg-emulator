@@ -1,0 +1,17 @@
+#!/bin/bash
+#SBATCH --gres=gpu:1g.24gb:1
+#SBATCH -c 2
+#SBATCH -t 3:00:00
+#SBATCH -o logs/%x-%j.out
+# One link of a chain of short jobs that generates thickness-ladder units (datagen/films.py) and
+# their coarse baselines (datagen/films_eval.py). No new field step starts after 2.25 h (the worst
+# frame takes ~30 min); units resume from their progress files. The link resubmits itself only if
+# units remain and it completed at least one frame (exit code 75), so a failing chain stops by itself.
+#   cd /data/smith/work/llg-emulator && sbatch -J films-a scripts/films.slrm UNIT...
+gto-memcap 16G || exit 1
+uv run python -u -m datagen.films --stop-after 2.25 "$@"
+rc=$?
+if [ $rc -ne 0 ] && [ $rc -ne 75 ]; then exit $rc; fi
+uv run python -u -m datagen.films_eval baselines "$@" || exit $?
+if [ $rc -eq 75 ]; then sbatch -J "$SLURM_JOB_NAME" scripts/films.slrm "$@" || exit $?; fi
+exit 0

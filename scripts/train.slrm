@@ -1,0 +1,19 @@
+#!/bin/bash
+#SBATCH --gres=gpu:1g.24gb:1
+#SBATCH -c 2
+#SBATCH -t 3:00:00
+#SBATCH -o logs/%x-%j.out
+# One link of a chain of short jobs that trains the learned coarse field (emulator/train.py). It stops
+# after 2.6 h with exit code 75 and resubmits itself, continuing from results/emulator/NAME/checkpoint.pt;
+# the run ends at the recipe's last step (exit 0) and submits its evaluation (emulator/evaluate.py,
+# results/emulator/NAME/report.txt); a failing link stops the chain.
+#   cd /data/smith/work/llg-emulator && sbatch -J train-NAME scripts/train.slrm RECIPE NAME
+gto-memcap 12G || exit 1
+uv run python -u -m emulator.train "$1" "$2" --stop-after 2.6
+rc=$?
+if [ $rc -eq 75 ]; then sbatch -J "$SLURM_JOB_NAME" scripts/train.slrm "$@" || exit $?; exit 0; fi
+if [ $rc -eq 0 ]; then
+  sbatch -J "eval-$2" --gres=gpu:1g.24gb:1 -c 2 -t 3:00:00 -o "logs/%x-%j.out" \
+    --wrap "gto-memcap 12G || exit 1; uv run python -u -m emulator.evaluate $2 > results/emulator/$2/report.txt; exit \$?" || exit $?
+fi
+exit $rc
