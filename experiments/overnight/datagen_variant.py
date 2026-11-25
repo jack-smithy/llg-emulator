@@ -20,6 +20,7 @@ VARIANTS = {
 }
 
 variant, first, last = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+datagen.KICK = 0.0  # the overnight variants ran without the kick, except small_kick
 for name, value in VARIANTS[variant].items():
     setattr(datagen, name, value)
 datagen.OUT_DIR = Path("datasets") / f"shield_{variant}"

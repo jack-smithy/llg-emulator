@@ -73,7 +73,7 @@ def write_well_file(path, dx, m, step_scalars, trajectory_scalars, constants):
         t1 = f.create_group("t1_fields")
         t1.attrs["field_names"] = ["m"]
         # one frame per chunk, so the loader reads only the steps it needs; written frame by frame,
-        # so m may be an HDF5 dataset larger than memory (datagen.py passes its checkpoint)
+        # so m may also be an HDF5 dataset larger than memory
         m_dataset = t1.create_dataset(
             "m", shape=m.shape, dtype=np.float32, chunks=(1, 1, nx, ny, nz, 3), compression="lzf"
         )
