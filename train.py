@@ -18,6 +18,7 @@ import logging
 import math
 from pathlib import Path
 
+import h5py
 import magnumnp
 import torch
 from magnumnp.common.constants import mu_0
@@ -29,17 +30,21 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader, Subset
 
 from model import DemagField, ExchangeField, WallEnergy, effective_field
-from datagen import A, DM_TOL, DX, N, Ms
+from datagen import A, Ms
 
 # importing magnum.np makes float64 on the GPU torch's default; the model, the loader
 # (pin_memory) and the demag kernel need torch's usual float32 on the CPU
 torch.set_default_dtype(torch.float32)
 torch.set_default_device("cpu")
+# relaxing to DM_TOL needs the field to ~1e-5 of its size, TF32 convolutions (which cuDNN may pick,
+# e.g. at batch size 1) give ~1e-3: one test loop at a time then converged in 81 % of the steps, not 100 %
+torch.backends.cudnn.allow_tf32 = False
 magnumnp.set_log_level(logging.WARNING)
 
 DATASET = "datasets/shield"
 RUN_DIR = Path("results/wall_energy")
-MAX_RELAX_STEPS = 2000  # MinimizerBB's maxiter; relaxation stops earlier at DM_TOL (as in datagen.py)
+MAX_RELAX_STEPS = 2000  # MinimizerBB's maxiter; relaxation stops earlier at DM_TOL
+DM_TOL = 10  # [A/m] torque tolerance of the relaxation, as datagen.py's --dm-tol
 N_CG_STEPS = 50  # conjugate-gradient iterations for the adjoint solve A w = P dL/dm*
 BATCH_SIZE = 4
 LEARNING_RATE = 1e-4
@@ -50,7 +55,7 @@ VALID_EVERY = 500
 N_VALID_SAMPLES = 64
 
 KD = 0.5 * mu_0 * Ms**2  # [J/m^3] scale of the learned energy density
-COARSEN = 5  # coarse cell = COARSEN^3 data cells; must divide N = (100, 50, 20): 2, 5 or 10
+COARSEN = 5  # coarse cell = COARSEN^3 data cells; must divide the data grid (datasets/shield: 100 x 50 x 20)
 TAU_MIN, TAU_MAX = 1e-13, 1e-5  # MinimizerBB's step-size bounds
 # first step size: MinimizerBB starts at TAU_MIN, but in float32 such a step moves no cell at all,
 # and the next BB step is then 0/0; 1e-9 reaches the float64 end states (later BB steps: 1e-7..1e-5)
@@ -128,6 +133,15 @@ def solve_adjoint(model, demag_field, exchange_field, m: Tensor, h_ext: Tensor, 
     return w, residual
 
 
+def data_grid(dataset: str) -> tuple[list[int], float]:
+    """Grid [nx, ny, nz] and cell size [m] of the stored data, from the first train file of dataset."""
+    path = sorted(Path(dataset, "data", "train").glob("*.hdf5"))[0]
+    with h5py.File(path) as f:
+        n = list(f["t1_fields/m"].shape[2:5])
+        x = f["dimensions/x"][:]  # cell centres
+    return n, (float(x[-1]) - float(x[0])) / (n[0] - 1)
+
+
 def coarsen(m: Tensor) -> Tensor:
     """Block-average m (B, X, Y, Z, 3) over COARSEN^3 cells and renormalise to |m| = 1."""
     m = F.avg_pool3d(m.permute(0, 4, 1, 2, 3), COARSEN).permute(0, 2, 3, 4, 1)
@@ -138,8 +152,10 @@ def unpack(batch: dict[str, Tensor]) -> tuple[Tensor, Tensor, Tensor]:
     """Coarse m_t and m_{t+1} (B, X, Y, Z, 3) and the applied field at t+1, h_ext (B, 3) [A/m]."""
     m_start = coarsen(batch["input_fields"][:, 0].to(DEVICE))
     m_target = coarsen(batch["output_fields"][:, 0].to(DEVICE))
-    b = batch["output_scalars"][:, 0].to(DEVICE)  # (B, 2): Bx, By [T]
-    h_ext = torch.cat([b, torch.zeros_like(b[:, :1])], dim=1) / mu_0
+    b = batch["output_scalars"][:, 0].to(DEVICE)  # (B, 3): Bx, By, Bz [T]
+    if b.shape[1] == 2:  # data written before datagen.py stored Bz: in-plane fields only
+        b = torch.cat([b, torch.zeros_like(b[:, :1])], dim=1)
+    h_ext = b / mu_0
     return m_start, m_target, h_ext
 
 
@@ -214,9 +230,10 @@ def main():
         valid_set, batch_size=BATCH_SIZE, num_workers=2, pin_memory=True
     )
 
-    assert all(n % COARSEN == 0 for n in N), f"COARSEN = {COARSEN} does not divide the mesh {N}"
-    n_coarse = [n // COARSEN for n in N]
-    dx_coarse = [d * COARSEN for d in DX]
+    n, dx = data_grid(DATASET)
+    assert all(k % COARSEN == 0 for k in n), f"COARSEN = {COARSEN} does not divide the data grid {n}"
+    n_coarse = [k // COARSEN for k in n]
+    dx_coarse = [dx * COARSEN] * 3
     model = WallEnergy(Kd=KD, V=math.prod(dx_coarse), Ms=Ms).to(DEVICE)
     demag_field = DemagField(n=n_coarse, dx=dx_coarse, Ms=Ms, device=DEVICE)
     exchange_field = ExchangeField(dx=dx_coarse, A=A, Ms=Ms)

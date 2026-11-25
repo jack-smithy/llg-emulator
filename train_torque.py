@@ -32,7 +32,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader, Subset
 
 import train
-from datagen import A, DX, N, Ms
+from datagen import A, Ms
 from field_model import LearnedField
 from model import DemagField, ExchangeField, WallEnergy, effective_field
 
@@ -160,10 +160,15 @@ def main():
         # not the_well's restrict_num_trajectories: in the_well 1.2.0 it keeps only trajectory 0 (every
         # sampled trajectory adds windows 0..W-1 instead of its own windows)
         assert sum(train_set.n_trajectories_per_file) == train_set.n_files  # one trajectory per file
-        windows = train_set.n_windows_per_trajectory[0]
         order = torch.randperm(train_set.n_files, generator=torch.Generator().manual_seed(0))
         trajectories = sorted(order[:N_TRAIN_TRAJECTORIES].tolist())  # nested: 6 of 12 of 24
-        train_set = Subset(train_set, [t * windows + w for t in trajectories for w in range(windows)])
+        # all windows of each chosen file (loops from a random start have fewer than from saturation)
+        windows = train_set.n_windows_per_trajectory
+        indices = []
+        for t in trajectories:
+            first = sum(windows[:t])
+            indices += range(first, first + windows[t])
+        train_set = Subset(train_set, indices)
     valid_set = WellDataset(path=train.DATASET, well_split_name="valid")
     # evenly spaced (m_t, m_{t+1}) pairs, so validation covers every trajectory and field
     valid_set = Subset(
@@ -184,8 +189,9 @@ def main():
         pin_memory=True,
     )
 
-    n_coarse = [n // train.COARSEN for n in N]
-    dx_coarse = [d * train.COARSEN for d in DX]
+    n, dx = train.data_grid(train.DATASET)
+    n_coarse = [k // train.COARSEN for k in n]
+    dx_coarse = [dx * train.COARSEN] * 3
     model = make_model(dx_coarse)
     demag_field = DemagField(n=n_coarse, dx=dx_coarse, Ms=Ms, device=train.DEVICE)
     exchange_field = ExchangeField(dx=dx_coarse, A=A, Ms=Ms)

@@ -1,10 +1,9 @@
 #!/bin/bash
-#SBATCH --gres=gpu:1g.24gb:1
-#SBATCH -c 2
+#SBATCH --gres=gpu:a100:1
 #SBATCH -t 3:00:00
 #SBATCH -o logs/%x-%j.out
-# Generates datasets/shield (datagen.py): 32 loops of about 5 min each on a slice, then stats.yaml.
-#   cd /data/smith/work/llg-emulator && sbatch -J shield scripts/shield.slrm
-gto-memcap 8G || exit 1
-uv run python -u datagen.py
+# One datagen.py run on a gtos3 A100 (float64, from ~1M cells), its arguments passed through, e.g.
+#   cd /data/smith/work/llg-emulator && sbatch -J datagen scripts/shield.slrm G1 --split test --n-samples 4
+# Set -t to the loops: at 10 nm a G1 loop takes about 25 min on an A100, a G2 loop about 3 h (estimates).
+uv run python -u datagen.py "$@"
 exit $?

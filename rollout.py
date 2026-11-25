@@ -20,7 +20,7 @@ import torch
 
 import train
 import train_torque
-from datagen import A, DX, Ms
+from datagen import A, Ms
 from model import DemagField, ExchangeField
 
 RUN_DIR = Path("results/torque_25nm")  # holds model.pt; the report and plot are written here
@@ -37,17 +37,29 @@ class NoCorrection(torch.nn.Module):
         return torch.zeros_like(m)
 
 
-def load_trajectories(split: str) -> tuple[torch.Tensor, torch.Tensor, np.ndarray]:
-    """Coarse m (B, T, X, Y, Z, 3), applied fields (B, T, 3) [A/m] and field axes (B,) [rad]."""
-    ms, fields, angles = [], [], []
+def load_trajectories(split: str) -> tuple[list[torch.Tensor], list[torch.Tensor], np.ndarray]:
+    """Per trajectory coarse m (T, X, Y, Z, 3) and applied fields (T, 3) [A/m]; field axes (B, 3).
+
+    Lists, not stacked: loops from a random start have fewer steps than loops from saturation.
+    """
+    ms, fields, axes = [], [], []
     for path in sorted(Path(train.DATASET, "data", split).glob("*.hdf5")):
         with h5py.File(path) as f:
-            m = torch.as_tensor(f["t1_fields/m"][0], device=train.DEVICE)  # (T, 100, 50, 20, 3)
-            b = np.stack([f["scalars/Bx"][0], f["scalars/By"][0], np.zeros_like(f["scalars/Bx"][0])], axis=-1)
+            m = torch.as_tensor(f["t1_fields/m"][0], device=train.DEVICE)  # (T, X, Y, Z, 3)
+            bz = f["scalars/Bz"][0] if "scalars/Bz" in f else np.zeros_like(f["scalars/Bx"][0])  # older files: no Bz
+            b = np.stack([f["scalars/Bx"][0], f["scalars/By"][0], bz], axis=-1)
             ms.append(train.coarsen(m))
             fields.append(torch.as_tensor(b / train.mu_0, device=train.DEVICE, dtype=torch.float32))
-            angles.append(float(f["scalars/field_angle"][0]))
-    return torch.stack(ms), torch.stack(fields), np.array(angles)
+            azimuth = float(f["scalars/field_angle"][0])
+            # older files: in-plane axes only
+            elevation = float(f["scalars/field_elevation"][0]) if "scalars/field_elevation" in f else 0.0
+            axes.append([np.cos(elevation) * np.cos(azimuth), np.cos(elevation) * np.sin(azimuth), np.sin(elevation)])
+    return ms, fields, np.array(axes)
+
+
+def mean_along(states: torch.Tensor, axis: np.ndarray) -> np.ndarray:
+    """<m> along the field axis at every step: states (T, X, Y, Z, 3) -> (T,)."""
+    return states.mean(dim=(1, 2, 3)).cpu().numpy() @ axis
 
 
 def rollout(model, demag_field, exchange_field, m0: torch.Tensor, fields: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -61,20 +73,37 @@ def rollout(model, demag_field, exchange_field, m0: torch.Tensor, fields: torch.
     return torch.stack(states, dim=1), torch.stack(converged, dim=1)
 
 
+def rollout_loops(model, demag_field, exchange_field, m_data, fields, axes) -> tuple[dict, list[np.ndarray]]:
+    """Roll out each loop of load_trajectories on its own: metrics, and <m> along the axis per loop."""
+    loops, mse, loop_error, converged = [], [], [], []
+    for m_loop, h_loop, axis in zip(m_data, fields, axes):
+        states, ok = rollout(model, demag_field, exchange_field, m_loop[None, 0], h_loop[None])
+        states = states[0]  # (T, X, Y, Z, 3)
+        loops.append(mean_along(states, axis))
+        mse.append(((states - m_loop) ** 2).sum(-1).mean().item())
+        loop_error.append(float(np.abs(loops[-1] - mean_along(m_loop, axis)).mean()))
+        converged.append(ok.float().mean().item())
+    metrics = {
+        "mse_mean": float(np.mean(mse)),
+        "mse_per_trajectory": mse,
+        "loop_error_mean": float(np.mean(loop_error)),
+        "converged": float(np.mean(converged)),
+    }
+    return metrics, loops
+
+
 def main():
-    m_data, fields, angles = load_trajectories(SPLIT)  # (B, T, X, Y, Z, 3)
-    n_coarse = list(m_data.shape[2:5])  # the magnet's size comes from the data
-    dx_coarse = [d * train.COARSEN for d in DX]
+    m_data, fields, axes = load_trajectories(SPLIT)
+    n_coarse = list(m_data[0].shape[1:4])  # the magnet's size comes from the data
+    _, dx = train.data_grid(train.DATASET)
+    dx_coarse = [dx * train.COARSEN] * 3
     demag_field = DemagField(n=n_coarse, dx=dx_coarse, Ms=Ms, device=train.DEVICE)
     exchange_field = ExchangeField(dx=dx_coarse, A=A, Ms=Ms)
     learned = train_torque.make_model(dx_coarse)
     learned.load_state_dict(torch.load(RUN_DIR / "model.pt", map_location=train.DEVICE))
     learned.eval()
 
-    axes = torch.as_tensor(np.stack([np.cos(angles), np.sin(angles), 0 * angles], -1), device=train.DEVICE, dtype=torch.float32)
-    b_axis = (fields * axes[:, None]).sum(-1).cpu().numpy() * train.mu_0 * 1e3  # (B, T) [mT]
-
-    report, loops = {}, {"data": (m_data.mean(dim=(2, 3, 4)) * axes[:, None]).sum(-1).cpu().numpy()}
+    report, loops = {}, {"data": [mean_along(m, axis) for m, axis in zip(m_data, axes)]}
     def renormalised(sigma):
         return ExchangeField(dx=dx_coarse, A=sigma * dx_coarse[0] / 2, Ms=Ms)  # cubic cells: one A_eff
 
@@ -90,24 +119,18 @@ def main():
         models.append((name, NoCorrection(), renormalised(sigma), "#e7298a", ":"))
     models.append(("learned correction", learned, exchange_field, "#1b9e77", "-"))
     for name, model, exchange, _, _ in models:
-        states, converged = rollout(model, demag_field, exchange, m_data[:, 0], fields)
-        mse = ((states - m_data) ** 2).sum(-1).mean(dim=(2, 3, 4))  # (B, T)
-        loops[name] = (states.mean(dim=(2, 3, 4)) * axes[:, None]).sum(-1).cpu().numpy()
-        report[name] = {
-            "mse_mean": mse.mean().item(),
-            "mse_per_trajectory": mse.mean(dim=1).tolist(),
-            "loop_error_mean": float(np.abs(loops[name] - loops["data"]).mean()),
-            "converged": converged.float().mean().item(),
-        }
+        report[name], loops[name] = rollout_loops(model, demag_field, exchange, m_data, fields, axes)
         print(name, json.dumps(report[name]), flush=True)
     (RUN_DIR / f"rollout_{SPLIT}.json").write_text(json.dumps(report, indent=1))
 
-    fig, axs = plt.subplots(1, len(angles), figsize=(4 * len(angles), 3.6), sharey=True, layout="constrained")
+    fig, axs = plt.subplots(1, len(axes), figsize=(4 * len(axes), 3.6), sharey=True, layout="constrained")
     styles = [("data", "#222222", "-")] + [(name, color, style) for name, _, _, color, style in models]
     for i, ax in enumerate(axs):
+        b_axis = fields[i].cpu().numpy() @ axes[i] * train.mu_0 * 1e3  # (T,) [mT]
         for name, color, linestyle in styles:
-            ax.plot(b_axis[i], loops[name][i], color=color, linestyle=linestyle, linewidth=1.4, label=name)
-        ax.set_title(f"field axis {np.degrees(angles[i]):.0f}°")
+            ax.plot(b_axis, loops[name][i], color=color, linestyle=linestyle, linewidth=1.4, label=name)
+        azimuth, elevation = np.degrees(np.arctan2(axes[i][1], axes[i][0])), np.degrees(np.arcsin(axes[i][2]))
+        ax.set_title(f"field axis {azimuth:.0f}°, {elevation:.0f}° out of plane")
         ax.set_xlabel("μ0 H along axis (mT)")
     axs[0].set_ylabel("<m> along axis")
     handles, labels = axs[0].get_legend_handles_labels()

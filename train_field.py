@@ -22,7 +22,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader, Subset
 
 import train
-from datagen import A, DX, N, Ms
+from datagen import A, Ms
 from field_model import LearnedField
 from model import DemagField, ExchangeField
 
@@ -129,8 +129,9 @@ def main():
     )
     valid_loader = DataLoader(valid_set, batch_size=BATCH_SIZE, num_workers=2, pin_memory=True)
 
-    n_coarse = [n // train.COARSEN for n in N]
-    dx_coarse = [d * train.COARSEN for d in DX]
+    n, dx = train.data_grid(train.DATASET)
+    n_coarse = [k // train.COARSEN for k in n]
+    dx_coarse = [dx * train.COARSEN] * 3
     model = LearnedField(Ms=Ms).to(train.DEVICE)
     demag_field = DemagField(n=n_coarse, dx=dx_coarse, Ms=Ms, device=train.DEVICE)
     exchange_field = ExchangeField(dx=dx_coarse, A=A, Ms=Ms)

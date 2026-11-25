@@ -5,19 +5,18 @@
   the sigma that fits the validation loops best (sigma is the paper's single calibration parameter);
 - every learned correction in RUNS.
 
-All are rolled out with rollout.rollout. Writes results/benchmark_<cell size>nm.json.
+All are rolled out with rollout.rollout_loops. Writes results/benchmark_<cell size>nm.json.
 """
 
 import json
 from pathlib import Path
 
-import numpy as np
 import torch
 
 import rollout
 import train
 import train_torque
-from datagen import A, DX, Ms
+from datagen import A, Ms
 from model import DemagField, ExchangeField
 
 SIGMA_FACTORS = [1 / 16, 1 / 8, 1 / 4, 1 / 2, 1, 2, 4]  # times rollout.SIGMA, for the calibration on the valid loops
@@ -27,26 +26,19 @@ RUNS = {  # COARSEN -> (run directory, ENERGY)
 }
 
 
-def loop_metrics(states: torch.Tensor, m_data: torch.Tensor, angles: np.ndarray) -> dict[str, float]:
-    """Loop error mean |<m.axis> - data| and pointwise MSE over all trajectories and steps."""
-    axes = torch.as_tensor(np.stack([np.cos(angles), np.sin(angles), 0 * angles], -1), device=states.device, dtype=states.dtype)
-    loop = (states.mean(dim=(2, 3, 4)) * axes[:, None]).sum(-1)
-    loop_data = (m_data.mean(dim=(2, 3, 4)) * axes[:, None]).sum(-1)
-    mse = ((states - m_data) ** 2).sum(-1).mean()
-    return {"loop_error": (loop - loop_data).abs().mean().item(), "mse": mse.item()}
-
-
 def main():
-    dx_coarse = [d * train.COARSEN for d in DX]
+    _, dx = train.data_grid(train.DATASET)
+    dx_coarse = [dx * train.COARSEN] * 3
     trajectories = {split: rollout.load_trajectories(split) for split in ("valid", "test")}
-    n_coarse = list(trajectories["test"][0].shape[2:5])  # the magnet's size comes from the data
+    n_coarse = list(trajectories["test"][0][0].shape[1:4])  # the magnet's size comes from the data
     demag_field = DemagField(n=n_coarse, dx=dx_coarse, Ms=Ms, device=train.DEVICE)
     exchange_field = ExchangeField(dx=dx_coarse, A=A, Ms=Ms)
 
     def run(split, model, exchange):
-        m_data, fields, angles = trajectories[split]
-        states, converged = rollout.rollout(model, demag_field, exchange, m_data[:, 0], fields)
-        return loop_metrics(states, m_data, angles) | {"converged": converged.float().mean().item()}
+        # loop error mean |<m.axis> - data| and pointwise MSE over all trajectories and steps
+        m_data, fields, axes = trajectories[split]
+        metrics, _ = rollout.rollout_loops(model, demag_field, exchange, m_data, fields, axes)
+        return {"loop_error": metrics["loop_error_mean"], "mse": metrics["mse_mean"], "converged": metrics["converged"]}
 
     def renormalised(sigma):
         return ExchangeField(dx=dx_coarse, A=sigma * dx_coarse[0] / 2, Ms=Ms)  # cubic cells

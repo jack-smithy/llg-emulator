@@ -4,8 +4,8 @@ Every cell follows the saturating law of Shield_Optimization_DS.pdf, eq. 1,
 
     m = x / sqrt(1 + |x|^2),    x = chi H / Ms,
 
-in the total field H = h_ext + h_demag(m), with magnum.np's FFT demag field on datagen.py's cell
-grid. There are no domains and no history, so the equilibrium is unique. It is the fixed point of
+in the total field H = h_ext + h_demag(m), with magnum.np's FFT demag field on the cell grid N,
+DX. There are no domains and no history, so the equilibrium is unique. It is the fixed point of
 
     b = m + H / Ms                          (the flux density mu0 (H + M), in units of mu0 Ms)
     m = the magnetisation the law gives for b
@@ -28,8 +28,21 @@ from magnumnp.field_terms import DemagField
 from torch import Tensor
 from torch.nn import functional as F
 
-from datagen import DX, Hmax, Hmin, Ms, N, chi, loop, material, setup, steps
+from datagen import (
+    Hmax,
+    Hmin,
+    Ms,
+    chi,
+    loop_from_saturated,
+    material,
+    setup,
+    steps,
+)
 
+# cell grid of the sweep in main(): the magnet of datasets/shield (0.5 x 0.25 x 0.1 um); without
+# exchange only its proportions matter, not its size
+N = [100, 50, 20]
+DX = [5e-9] * 3
 AXIS = np.array([1.0, 0.0, 0.0])  # field axis of the sweep in main()
 # converged when, in every cell, the total field is within H_TOL of the field the law needs for m;
 # the scale to stay far below is the knee of the law, Ms / chi = 8 A/m
@@ -54,7 +67,10 @@ def magnetisation(b: Tensor) -> Tensor:
 def solve(state, demag, h_ext: Tensor) -> Tensor:
     """Equilibrium m (X, Y, Z, 3), in units of Ms, in the applied field h_ext (X, Y, Z, 3) [A/m]."""
     m = torch.zeros_like(h_ext)
-    m_ahead, theta = m, 1.0  # m_ahead: m moved on by the momentum, where each iteration starts
+    m_ahead, theta = (
+        m,
+        1.0,
+    )  # m_ahead: m moved on by the momentum, where each iteration starts
     for _ in range(MAX_ITERATIONS):
         state.m = m_ahead
         H = h_ext + demag.h(state)
@@ -62,12 +78,16 @@ def solve(state, demag, h_ext: Tensor) -> Tensor:
         # (m_new - m_ahead) Ms is H minus the field the law needs for m_new
         if (m_new - m_ahead).abs().max() * Ms < H_TOL:
             return m_new
-        if ((m_ahead - m_new) * (m_new - m)).sum() > 0:  # the momentum points uphill: restart it
+        if (
+            (m_ahead - m_new) * (m_new - m)
+        ).sum() > 0:  # the momentum points uphill: restart it
             theta = 1.0
         theta_new = (1 + math.sqrt(1 + 4 * theta**2)) / 2
         m_ahead = m_new + (theta - 1) / theta_new * (m_new - m)
         m, theta = m_new, theta_new
-    raise RuntimeError(f"not converged to {H_TOL:.1e} A/m in {MAX_ITERATIONS} iterations")
+    raise RuntimeError(
+        f"not converged to {H_TOL:.1e} A/m in {MAX_ITERATIONS} iterations"
+    )
 
 
 def main():
@@ -75,7 +95,9 @@ def main():
     demag = DemagField()
 
     # the Hmax -> Hmin half of datagen.py's loop: with no history, the way back is the same curve
-    field_values = loop(Hmin=Hmin, Hmax=Hmax, steps=steps, axis=AXIS)[: steps // 2 + 1]
+    field_values = loop_from_saturated(Hmin=Hmin, Hmax=Hmax, steps=steps, axis=AXIS)[
+        : steps // 2 + 1
+    ]
     start = time.time()
     print("B (mT)   <m> along the field axis")
     for field in field_values:
