@@ -5,10 +5,13 @@ description = "Learned coarse micromagnetics for NiFe shields (quasi-static fiel
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "equinox>=0.13.8",
     "h5py>=3.16.0",
-    "magnumnp==2.2.0",
+    "magnumnp>=2.2.0",
+    "matplotlib>=3.11.2",
+    "neuraloperator>=2.0.0",
     "the-well==1.2.0",
-    "torch==2.13.0",
+    "torch>=2.13.0",
 ]
 
 [dependency-groups]
@@ -24,4 +27,4 @@ pythonpath = ["."]
 testpaths = ["tests"]
 
 [tool.ruff.lint]
-ignore=["F722", "F541", "E402", "I001", "PLR0402"]
+ignore=["F722", "F541", "E402", "I001","B023", "PLR0402"]

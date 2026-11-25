@@ -1,0 +1,15 @@
+#!/bin/bash
+# TEMPLATE for the 4 x H100 cluster (adapt the #SBATCH lines to its conventions: GPU request syntax,
+# partition, account). One node, 4 datagen workers, one per GPU, sharing the trajectories by index.
+# datagen.py checkpoints after every field step and starts no step after its TIME_BUDGET (71 h), so
+# resubmitting this script continues where the last job stopped. When every worker reports "all
+# trajectories written", run once: python -c "import well_io; well_io.write_stats('datasets/shield_cluster')"
+#SBATCH --nodes=1
+#SBATCH --ntasks=4
+#SBATCH --gpus-per-task=1
+#SBATCH --cpus-per-task=4
+#SBATCH --time=3-00:00:00
+#SBATCH -o logs/%x-%j.out
+cd "$SLURM_SUBMIT_DIR"
+srun --ntasks=4 --gpus-per-task=1 --exact bash -c \
+    'PYTHONPATH=. python -u experiments/cluster/datagen_worker.py $SLURM_PROCID $SLURM_NTASKS > logs/worker-$SLURM_JOB_ID-$SLURM_PROCID.out 2>&1'

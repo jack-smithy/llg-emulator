@@ -1,0 +1,15 @@
+#!/bin/bash
+#SBATCH --gres=gpu:1g.24gb:1
+#SBATCH -c 2
+#SBATCH -t 3:00:00
+#SBATCH -o logs/%x-%j.out
+# One link of a chain of short jobs that generates datasets/shield (datagen.py). datagen.py skips
+# trajectories already written, starts none that may not finish within its TIME_BUDGET (2.75 h) and
+# exits with 75 if some are left; only then does the link resubmit itself. A link that fails or hits
+# the time limit does not resubmit, so the chain stops by itself. The last link writes stats.yaml.
+#   cd /data/smith/work/llg-emulator && sbatch -J shield scripts/shield.slrm
+gto-memcap 8G || exit 1
+uv run python -u datagen.py
+rc=$?
+if [ $rc -eq 75 ]; then sbatch -J "$SLURM_JOB_NAME" scripts/shield.slrm || exit $?; exit 0; fi
+exit $rc
