@@ -1,30 +1,30 @@
 [project]
 name = "llg-emulator"
 version = "0.1.0"
-description = "FNO emulator for LLG micromagnetics of permalloy thin films"
+description = "Learned coarse micromagnetics for NiFe shields (quasi-static field sweeps)"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
-    "accelerate>=1.15.0",
+    "equinox>=0.13.8",
     "h5py>=3.16.0",
-    "jax[cuda13]>=0.11.2",
     "magnumnp>=2.2.0",
-    "neuralmag[jax]>=1.0.0",
-    "optax>=0.2.8",
-    "pdequinox",
-    "pyyaml>=6.0.3",
-    "the-well>=1.2.0",
-    "torch>=2.14.0",
+    "matplotlib>=3.11.2",
+    "neuraloperator>=2.0.0",
+    "the-well==1.2.0",
+    "torch>=2.13.0",
 ]
 
 [dependency-groups]
 dev = [
     "ipykernel>=7.3.0",
+    "magpylib>=6.3.0",
+    "pytest>=9.2.0",
     "ruff>=0.16.4",
 ]
 
-[tool.ruff.lint]
-ignore=["F722", "F541", "E402", "I001", "PLR0402"]
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
 
-[tool.uv.sources]
-pdequinox = { path = "../pdequinox" }
+[tool.ruff.lint]
+ignore=["F722", "F541", "E402", "I001","B023", "PLR0402"]

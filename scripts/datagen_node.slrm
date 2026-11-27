@@ -1,0 +1,21 @@
+#!/bin/bash
+# TEMPLATE for the 4 x H100 cluster (not gto4): adapt the #SBATCH lines (GPU request syntax,
+# partition, account). One node, 4 workers (one per GPU), each running PER_WORKER loops of one
+# geometry and split into datasets/<GEOMETRY>/<SPLIT>:
+#   sbatch scripts/datagen_node.slrm GEOMETRY SPLIT FIRST PER_WORKER
+# Worker k runs loops FIRST + k * PER_WORKER ... FIRST + (k + 1) * PER_WORKER - 1, so "G2 train 0 12"
+# runs loops 0-47, and G6's train split is two jobs, "G6 train 0 6" and "G6 train 24 6".
+# Every job must finish within the time limit: datagen.py does not resume.
+#SBATCH --nodes=1
+#SBATCH --ntasks=4
+#SBATCH --gpus-per-task=1
+#SBATCH --cpus-per-task=4
+#SBATCH --time=3-00:00:00
+#SBATCH -o logs/%x-%j.out
+cd "$SLURM_SUBMIT_DIR"
+export GEOMETRY=$1 SPLIT=$2 FIRST=$3 PER_WORKER=$4
+srun --ntasks=4 --gpus-per-task=1 --exact bash -c \
+    '.venv/bin/python -u datagen.py $GEOMETRY --split $SPLIT \
+        --first-index $((FIRST + SLURM_PROCID * PER_WORKER)) --n-samples $PER_WORKER \
+        > logs/worker-$SLURM_JOB_ID-$SLURM_PROCID.out 2>&1'
+exit $?
