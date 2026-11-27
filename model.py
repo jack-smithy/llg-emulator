@@ -16,8 +16,11 @@ from nn.layers import Activation
 
 
 class WallEnergy(nn.Module):
-    """Three 3x3x3 convolutions (local stencils like exchange's), SiLU because training differentiates
-    the field h = -dE/dm once more (ReLU has no second derivative), and a pointwise projection."""
+    """The energy density is a ResNet3d: a pointwise lift, residual blocks of two 3x3x3 convolutions
+    (local stencils like exchange's; with the default 2 blocks each cell's density sees 4 cells in every
+    direction) and a pointwise projection, zero at the start so training starts from coarse physics.
+    GELU, a smooth activation, because training differentiates the field h = -dE/dm once more (ReLU has
+    no second derivative)."""
 
     def __init__(
         self,
@@ -27,7 +30,7 @@ class WallEnergy(nn.Module):
         hidden_channels: int = 32,
         hidden_layers: int = 2,
         kernel_size: int = 3,
-        activaton: Activation = F.gelu,
+        activation: Activation = F.gelu,
     ):
         super().__init__()
         self.cnn = ResNet3d(
@@ -36,7 +39,7 @@ class WallEnergy(nn.Module):
             out_channels=1,
             num_hidden_layers=hidden_layers,
             kernel_size=kernel_size,
-            activation=activaton,  # smooth: training differentiates h = -dE/dm once more
+            activation=activation,  # smooth: training differentiates h = -dE/dm once more
             use_norm=False,  # GroupNorm over all cells would make the energy non-local
             zero_projection_layer=True,
         )
@@ -45,7 +48,7 @@ class WallEnergy(nn.Module):
         self.Ms = Ms
 
     def density(self, m: Tensor, mask: Tensor | None) -> Tensor:
-        """Energy Density [Jm^{-3}]"""
+        """Energy density in units of Kd (dimensionless): m (B, X, Y, Z, 3) -> (B, X, Y, Z)."""
         u = self.cnn(m.permute(0, 4, 1, 2, 3), None if mask is None else mask[:, None])
         return u[:, 0]
 

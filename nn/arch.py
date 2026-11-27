@@ -1,4 +1,4 @@
-from nn.layers import (
+from .layers import (
     Activation,
     BoundaryMode,
     PointwiseLinearConv3d,

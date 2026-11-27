@@ -1,1 +1,1 @@
-from arch import ResNet3d
+from .arch import ResNet3d

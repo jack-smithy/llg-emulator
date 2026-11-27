@@ -4,26 +4,22 @@ Every stored state is a relaxed state of the fine physics at its applied field. 
 coarse demag + exchange + applied field leave a torque on the block-averaged state; the learned energy
 E_theta (model.py) must cancel it, and every state must be a minimum, not a saddle:
 
-    L = mean |P h_eff(m)|^2 / Ms^2  +  STABILITY_WEIGHT * mean relu(-kappa / Ms)^2,
+    L = mean |P h_eff(m)|^2 / Ms^2  +  lambda_stability * mean relu(-kappa / Ms)^2,
 
 kappa the softest curvature of the coarse energy at m (physics.softest_curvature), both averaged over
-the magnet's cells. Batches mix geometries: every state is padded with air to the largest grid
-(data.StoredStates), which changes nothing in the physics or the learned energy. No relaxation is
-needed to train. Every --select-every steps the model rolls out the valid loops of every geometry, and
-the checkpoint with the lowest loop error becomes model.pt: torque and stability only constrain the
-data states, and long runs can fall into spurious minima elsewhere.
+the magnet's cells. Batches mix the geometries data.GEOMETRIES: every state is padded with air to the
+largest grid (data.StoredStates), which changes nothing in the physics or the learned energy. No
+relaxation is needed to train. At the end the model rolls out the valid and test loops of every
+geometry (rollout.evaluate).
 
-    python train.py RUN --geometries G1 G3 --coarsen 2 --steps 10000 --seed 0 [--resume]
+    python train.py RUN --coarsen 2 --steps 10000 --seed 0       (one long job: scripts/train.slrm)
 
-Writes results/RUN/{args.json, log.json, model.pt, checkpoint.pt, rollout_valid.json,
-rollout_test.json}. With --resume a run continues from checkpoint.pt, so a long run can be a chain of
-short jobs (scripts/train.slrm).
+Writes results/RUN/{args.json, log.json, model.pt, rollout_valid.json, rollout_test.json}.
 """
 
 import argparse
 import json
 import math
-import time
 from pathlib import Path
 
 import torch
@@ -32,7 +28,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader
 
 import rollout
-from data import GEOMETRIES, StoredStates, coarse_grid
+from data import GEOMETRIES, StoredStates
 from datagen import A, Ms
 from model import WallEnergy
 from physics import (
@@ -103,7 +99,6 @@ def main():
 
     args = parser.parse_args()
 
-    start_time = time.time()
     run_dir = Path("results", args.run)
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -111,7 +106,6 @@ def main():
         print(f"{run_dir} already exists", flush=True)
         return
 
-    checkpoint_path = run_dir / "checkpoint.pt"
     (run_dir / "args.json").write_text(json.dumps(vars(args), indent=1))
 
     torch.manual_seed(args.seed)
@@ -146,9 +140,7 @@ def main():
         ],
         milestones=[WARMUP_STEPS],
     )
-    log, best = [], {"loop_error": math.inf}
-
-    window = []
+    log, window = [], []
 
     for step, batch in zip(range(1, args.steps + 1), forever(loader)):
         window.append(
@@ -170,41 +162,23 @@ def main():
                 for name in window[0]
             }
             window = []
-            if step == args.steps:
-                model.eval()
-                valid, _ = rollout.evaluate(model, GEOMETRIES, args.coarsen, "valid")
-                model.train()
-                entry |= {
-                    key: value
-                    for key, value in valid.items()
-                    if key.startswith("loop_error")
-                }
-                if valid["loop_error"] < best["loop_error"]:
-                    best = {"loop_error": valid["loop_error"], "step": step}
-                    torch.save(model.state_dict(), run_dir / "model.pt")
-                    (run_dir / "rollout_valid.json").write_text(json.dumps(valid))
-            # every LOG_EVERY steps (a small file), so a job cut off by its time limit loses little
-            checkpoint = {
-                "model": model.state_dict(),
-                "optimizer": optimizer.state_dict(),
-                "scheduler": scheduler.state_dict(),
-                "step": step,
-                "best": best,
-            }
-            torch.save(checkpoint, checkpoint_path)
             log.append(entry)
             print(entry, flush=True)
             (run_dir / "log.json").write_text(json.dumps(log, indent=1))
 
-    model.load_state_dict(torch.load(run_dir / "model.pt", map_location=DEVICE))
+    # saved before the rollouts, so a failing rollout cannot lose the trained model
+    torch.save(model.state_dict(), run_dir / "model.pt")
     model.eval()
-    test, _ = rollout.evaluate(model, GEOMETRIES, args.coarsen, "test")
-    test["selected_step"] = best["step"]
-    (run_dir / "rollout_test.json").write_text(json.dumps(test))
-    print(
-        f"selected step {best['step']}: valid {best['loop_error']:.4f}, test {test['loop_error']:.4f}",
-        flush=True,
-    )
+    loop_errors = {}
+    for split in ("valid", "test"):
+        report, _ = rollout.evaluate(model, GEOMETRIES, args.coarsen, split)
+        (run_dir / f"rollout_{split}.json").write_text(json.dumps(report))
+        loop_errors[split] = {
+            key: round(value, 4)
+            for key, value in report.items()
+            if key.startswith("loop_error")
+        }
+    print(f"loop errors: {loop_errors}", flush=True)
 
 
 if __name__ == "__main__":

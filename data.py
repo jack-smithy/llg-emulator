@@ -26,7 +26,7 @@ def loop_files(geometry: str, split: str) -> list[Path]:
 def coarse_grid(geometry: str, factor: int) -> tuple[list[int], list[float]]:
     """Cells and cell size [m] of a geometry after block-averaging the stored data by factor."""
     with h5py.File(loop_files(geometry, "train")[0]) as f:
-        n, dx = list(f["m"].shape[1:4]), float(f.attrs["dx"])
+        n, dx = list(f["m"].shape[1:4]), float(f.attrs["dx"])  # type: ignore
     assert all(k % factor == 0 for k in n), (
         f"{factor} does not divide the stored grid {n} of {geometry}"
     )
@@ -51,28 +51,38 @@ class StoredStates(Dataset):
         for geometry in geometries:
             for path in loop_files(geometry, split):
                 with h5py.File(path) as f:
-                    self.states += [(path, t) for t in range(f["m"].shape[0])]
+                    self.states += [(path, t) for t in range(f["m"].shape[0])]  # type: ignore
 
         shape, dx = zip(*[coarse_grid(geometry, factor) for geometry in geometries])
         self.shape = np.max(shape, axis=0).tolist()
-        assert all(d == dx[0] for d in dx), f"the geometries have different cell sizes: {dx}"
-        self.dx = dx[0]  # coarse cell size [m] along x, y, z: the stored cell size times factor
+        assert all(d == dx[0] for d in dx)
+        self.dx = dx[0]  # coarse cell size [m] along x, y, z
 
     def __len__(self):
         return len(self.states)
 
     def __getitem__(self, index):
         path, t = self.states[index]
-        with h5py.File(path) as f:
-            m = torch.as_tensor(f["m"][t])
-            h_ext = torch.as_tensor(f["B"][t] / mu_0, dtype=torch.float32)
+        # one state: (X, Y, Z, 3), (3,)
+        m, h_ext, _ = load_fields(path=path, t=t, device=None)
         m = coarsen(m[None], self.factor)[0]
-        padding = [p - k for p, k in zip(self.shape, m.shape[:3])]
-        mask = F.pad(
-            torch.ones(m.shape[:3]), (0, padding[2], 0, padding[1], 0, padding[0])
-        )
-        m = F.pad(m, (0, 0, 0, padding[2], 0, padding[1], 0, padding[0]))
+        px, py, pz = [p - k for p, k in zip(self.shape, m.shape[:3])]
+        mask = F.pad(torch.ones(m.shape[:3]), (0, pz, 0, py, 0, px))
+        m = F.pad(m, (0, 0, 0, pz, 0, py, 0, px))
         return {"m": m, "mask": mask, "h_ext": h_ext}
+
+
+def load_fields(
+    path: str | Path, t: int | slice, device
+) -> tuple[Tensor, Tensor, np.ndarray]:
+    """The stored m and applied field h_ext [A/m] at step(s) t, and the loop's field axis (3,).
+    t an int: m (X, Y, Z, 3), h_ext (3,); t a slice: m (T, X, Y, Z, 3), h_ext (T, 3). float32, as
+    the model: a float64 field would turn m float64 in the relaxation."""
+    with h5py.File(path) as f:
+        m = torch.as_tensor(f["m"][t], device=device)  # type: ignore
+        h_ext = torch.as_tensor(f["B"][t] / mu_0, dtype=torch.float32, device=device)  # type: ignore
+        axis = np.array(f.attrs["axis"])
+    return m, h_ext, axis
 
 
 def load_loops(geometry: str, split: str, factor: int) -> list[dict]:
@@ -80,17 +90,12 @@ def load_loops(geometry: str, split: str, factor: int) -> list[dict]:
     "axis": (3,)}. Loops from a random start have fewer steps than loops from saturation."""
     loops = []
     for path in loop_files(geometry, split):
-        with h5py.File(path) as f:
-            m = torch.as_tensor(f["m"][:], device=DEVICE)
-            fields = torch.as_tensor(
-                f["B"][:] / mu_0, device=DEVICE, dtype=torch.float32
-            )
-            axis = np.array(f.attrs["axis"])
+        m, h_ext, axis = load_fields(path=path, t=slice(None), device=DEVICE)
         loops.append(
             {
                 "name": f"{geometry}/{split}/{path.stem}",
                 "m": coarsen(m, factor),
-                "fields": fields,
+                "fields": h_ext,
                 "axis": axis,
             }
         )
