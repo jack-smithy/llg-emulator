@@ -94,6 +94,8 @@ def softest_curvature(model, demag_field, exchange_field, m: Tensor, h_ext: Tens
     with torch.enable_grad():
         m_fixed = m.detach()
         m = m_fixed.clone().requires_grad_()
+        if hasattr(model, "h_ext"):  # model.ContextWallEnergy
+            model.h_ext = h_ext
         h_theta = model.field(m)  # graph in m (and in theta when training)
         h_fixed = demag_field(m_fixed) + exchange_field(m_fixed) + h_ext[:, None, None, None, :]
         m_dot_h = (m_fixed * (h_fixed + h_theta)).sum(-1, keepdim=True)
