@@ -145,15 +145,21 @@ class ResidualLayer3d(nn.Module):
 
         self.activation = activation
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, mask: Tensor | None = None) -> Tensor:
+        """mask (B, 1, X, Y, Z), 1 inside the domain and 0 in padding (stride 1 only): the padded
+        cells are zeroed after every activation, so a padded domain gives the same result as the
+        domain alone with zero (AIRBOX) padding."""
         skip = x
         x = self.conv1(x)
         x = self.norm1(x)
         x = self.activation(x)
+        if mask is not None:
+            x = x * mask
         x = self.conv2(x)
         x = self.norm2(x)
         skip = self.bypass_conv(skip)
-        return self.activation(x + skip)
+        x = self.activation(x + skip)
+        return x if mask is None else x * mask
 
 
 def residual_constructor_3d(

@@ -53,7 +53,7 @@ index, so a loop is the same however the indices are shared out over workers.
 1. **On the cluster:** clone the repository, create the venv as `.venv`, run `mkdir -p logs`, and
    adapt the `#SBATCH` lines of `scripts/datagen_node.slrm` (a template).
 2. **Submit one node job per geometry and split** (4 workers, one per GPU):
-   `sbatch scripts/datagen_node.slrm G2 train 0 12` runs loops 0–47 into `datasets/cluster/G2`.
+   `sbatch scripts/datagen_node.slrm G2 train 0 12` runs loops 0–47 into `datasets/G2/train`.
    Validation and test: `G2 valid 0 4`, `G2 test 0 4`.
 3. **Submit `G2 valid 0 4` first** and check its time per loop in `logs/worker-*.out` before submitting the rest.
 4. **Split G6's train split over two jobs:** `G6 train 0 6` and `G6 train 24 6`.
@@ -74,10 +74,13 @@ does not resume. Rerunning a job redoes it.
 On gto4, `sbatch -J datagen scripts/shield.slrm G1 --split test --n-samples 4` runs `datagen.py`
 on an A100 with any arguments (set `-t` to the loops).
 
-## First training plan: 200 nm only, then bigger magnets
+## Training plan
 
-- **Train one model at 200 nm:** point `train.DATASET` at a geometry folder, e.g. `datasets/cluster/G2`, and set `train.COARSEN = 4`. Training averages the stored 50 nm data over 4 × 4 × 4 blocks and renormalises (`train.coarsen`). The cell size and grid come from the files.
-- **Use it on magnets of any size at 200 nm.** The learned correction is local, and demag is computed exactly for any grid, so nothing depends on how many cells the magnet has. The shield at 200 nm is 501 × 251 × 101 = 12.7M cells, the size of the paper's own coarse simulation, so it fits on one H100.
+*Update 2026-11-27: on G1, 100 nm works (loop error ~0.008, like 50 nm); 200 nm is ~3x worse and, trained
+on 2-cell-thick plates, fails on thick blocks. Train at 100 nm first; 200 nm needs thick geometries.*
+
+- **Train one model:** `train.py RUN --geometries G1 G2 ... --coarsen 2` (100 nm; `--coarsen 4` for 200 nm). Training averages the stored 50 nm data over coarsen^3 blocks and renormalises (`data.coarsen`). The cell size and grid come from the files.
+- **Use it on magnets of any size at that cell size.** The learned correction is local, and demag is computed exactly for any grid, so nothing depends on how many cells the magnet has. The shield at 200 nm is 501 × 251 × 101 = 12.7M cells, the size of the paper's own coarse simulation, so it fits on one H100.
 
 **The main model trains on the train loops of all six geometries** and is tested on their test loops.
 That error is optimistic: in one block, the shape fixes the closure domains and vortex positions,
@@ -100,12 +103,8 @@ extra models used only as a diagnostic:
 ## Code status
 
 - **`datagen.py`: done.** One geometry per run, settings as command-line arguments. The files store Bx, By, Bz [T], `field_angle`, `field_elevation` and `fine_dx` (the simulated cell size).
-- **Training:** `train.py`, `train_torque.py`, `train_field.py`, `rollout.py` and `benchmark.py` read the cell size and grid from the dataset. `rollout.py` and `benchmark.py` roll out each loop on its own (a folder mixes 201- and 151-step loops) and measure ⟨m⟩ along 3D axes.
-- **Still missing before training on the cluster data:**
-  - train on several geometry folders at once (the main model on six, the hold-out models on five);
-  - add the magnet-mask input.
-- `stats.yaml` is not written by the node jobs: nothing reads it (only the_well's normalisation would). If needed, once all train loops of a geometry exist:
-  `.venv/bin/python -c "import well_io; well_io.write_stats('datasets/cluster/G2')"`.
+- **Training: done.** `train.py` trains on several geometry folders at once (one loader and one demag field per geometry) and reads the cell size and grid from the files; `rollout.py` rolls out each loop on its own (a folder mixes 201- and 151-step loops) and measures ⟨m⟩ along 3D axes.
+- **Still missing:** the magnet-mask input.
 
 ## One check before production
 

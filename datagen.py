@@ -1,8 +1,8 @@
-"""Quasi-static hysteresis loops of NiFe blocks as Well files, one folder per geometry:
+"""Quasi-static hysteresis loops of NiFe blocks, one HDF5 file per loop (save_loop), one folder per geometry:
 
     python datagen.py G2 --split train --n-samples 24
 
-writes datasets/cluster/G2/data/train/shield_00.hdf5 ... shield_23.hdf5. Each loop draws its own
+writes datasets/G2/train/loop_00.h5 ... loop_23.h5. Each loop draws its own
 field axis and start (draw_config) from a generator seeded by geometry, split and loop index.
 """
 
@@ -18,7 +18,7 @@ from magnumnp.common import Mesh, State
 from magnumnp.solvers import MinimizerBB
 import numpy as np
 
-import well_io
+import h5py
 
 Ms = 1 / mu_0  # (1T)
 A = 13e-12
@@ -172,32 +172,14 @@ def simulate(
     return m, n_unconverged
 
 
-def save_trajectory(path, dx, fine_dx, axis, field_values, m):
-    """Write one loop as a Well file holding a single trajectory.
-
-    m: (steps, nx, ny, nz, 3) on stored cells of size dx [m]; fine_dx: the simulated cell size [m].
-    """
-    well_io.write_well_file(
-        path,
-        dx=dx,
-        m=m[None],  # (1, steps, nx, ny, nz, 3)
-        step_scalars={  # mu0 H [T], as train.py and rollout.py read it
-            "Bx": mu_0 * field_values[None, :, 0],
-            "By": mu_0 * field_values[None, :, 1],
-            "Bz": mu_0 * field_values[None, :, 2],
-        },
-        trajectory_scalars={
-            "field_angle": [
-                np.arctan2(axis[1], axis[0])
-            ],  # of the axis in the xy plane
-            "field_elevation": [np.arcsin(axis[2])],  # of the axis out of the xy plane
-        },
-        constants={
-            "Ms": Ms,
-            "A": A,
-            "fine_dx": fine_dx,
-        },
-    )
+def save_loop(path, dx, fine_dx, axis, field_values, m):
+    """Write one loop as a plain HDF5 file: m (steps, nx, ny, nz, 3), the block averages on stored cells
+    of size dx [m] (not renormalised); B (steps, 3), the applied field mu0 H [T]; attributes dx,
+    fine_dx (the simulated cell size), Ms, A and the field axis (3,)."""
+    with h5py.File(path, "w") as f:
+        f["m"] = m
+        f["B"] = mu_0 * field_values
+        f.attrs.update({"dx": dx, "fine_dx": fine_dx, "Ms": Ms, "A": A, "axis": axis})
 
 
 def main():
@@ -229,12 +211,7 @@ def main():
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
-        "--out-dir", type=Path, default=Path("datasets/cluster"), help="writes OUT_DIR/GEOMETRY"
-    )
-    parser.add_argument(
-        "--no-stats",
-        action="store_true",
-        help="no stats.yaml after the train split (parallel workers: write it once all are done)",
+        "--out-dir", type=Path, default=Path("datasets"), help="writes OUT_DIR/GEOMETRY/SPLIT/loop_NN.h5"
     )
     args = parser.parse_args()
 
@@ -251,8 +228,8 @@ def main():
     external = ExternalField()
     minimizer = MinimizerBB(terms=[demag, exchange, external])
 
-    out_dir = args.out_dir / args.geometry
-    (out_dir / "data" / args.split).mkdir(parents=True, exist_ok=True)
+    out_dir = args.out_dir / args.geometry / args.split
+    out_dir.mkdir(parents=True, exist_ok=True)
     geometry_number = list(geometries_um).index(args.geometry)
     for i in range(args.first_index, args.first_index + args.n_samples):
         # one generator per loop, so a loop is the same however the indices are shared out over
@@ -278,8 +255,8 @@ def main():
             store_block=args.store_block,
         )
 
-        path = out_dir / "data" / args.split / f"shield_{i:02d}.hdf5"
-        save_trajectory(
+        path = out_dir / f"loop_{i:02d}.h5"
+        save_loop(
             path,
             dx=args.dx * args.store_block,
             fine_dx=args.dx,
@@ -293,9 +270,6 @@ def main():
             f"{time.time() - start_time:.0f} s, {n_unconverged} unconverged steps -> {path}",
             flush=True,
         )
-
-    if args.split == "train" and not args.no_stats:
-        well_io.write_stats(out_dir)
 
     print(f"all trajectories written to {out_dir}", flush=True)
 
